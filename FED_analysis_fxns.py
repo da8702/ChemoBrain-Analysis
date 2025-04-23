@@ -1811,6 +1811,8 @@ def histogram_breakpoint_plot_simple(
 
     # ---------- 4. plot ----------------------------------------------------
     plt.figure(figsize=(10, 6))
+    # ensure x-axis covers full bins for all styles (so CDF scales with bin_size)
+    plt.xlim(bin_edges[0], bin_edges[-1])
 
     # Determine default title and ylabel based on style
     if plot_title is None:
@@ -1876,24 +1878,27 @@ def histogram_breakpoint_plot_simple(
                 color=colour, alpha=alpha, label=label
             )
         elif style == "cdf":
-            # cumulative distribution function
+            # cumulative distribution function grouped by bin_size
             counts, edges = np.histogram(bpts, bins=bin_edges, density=False)
             cum_counts = np.cumsum(counts)
             cum_prob = cum_counts / cum_counts[-1]
+            # x-values at bin centers
+            centers = edges[:-1] + bin_size / 2
             # plot CDF as step function
-            plt.step(edges[1:], cum_prob, where='post',
-                     color=colour, alpha=alpha, label=label)
+            plt.step(centers, cum_prob, where='post', color=colour, alpha=alpha, label=label)
         else:
             raise ValueError(f"Unknown style: {style}. Use 'histogram', 'density', 'line', or 'cdf'.")
 
     # ---------- 5. string-range x-labels -----------------------------------
     if bin_size == 1:
-        plt.xticks(range(1, max_val + 1))
+        # single breakpoint values
+        ticks = np.arange(1, max_val + 1)
+        labels = [str(int(x)) for x in ticks]
+        plt.xticks(ticks, labels)
     else:
-        # Center positions for each bar
+        # range labels for each bin interval
         centers = bin_edges[:-1] + bin_size / 2
-        # Labels like "1–2", "3–4", etc.
-        labels = [f"{int(edge + 0.5)}–{int(edge + bin_size - 0.5)}" for edge in bin_edges[:-1]]
+        labels = [f"{int(edge+0.5)}–{int(edge+bin_size-0.5)}" for edge in bin_edges[:-1]]
         plt.xticks(centers, labels, rotation=45)
 
     # ---------- 6. optional percentiles (unchanged) ------------------------
