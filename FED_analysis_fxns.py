@@ -1757,7 +1757,8 @@ def histogram_breakpoint_plot_simple(
     hist_colors=None,
     time_col="MM:DD:YYYY hh:mm:ss",
     event_col="Event",
-    histogram_buckets=10,          # still used if data span is large
+    bin_size=1,
+    x_max=None,
     alpha=0.4,
     plot_title="Breakpoint Frequency Distribution",
     plot_xlabel="Breakpoint Value",
@@ -1802,10 +1803,10 @@ def histogram_breakpoint_plot_simple(
         print("No breakpoints found.")
         return
 
-    lo_int = int(min(all_vals))
-    hi_int = int(max(all_vals))
-    # bins centred on whole numbers: …, -0.5, 0.5, 1.5, …
-    bin_edges = np.arange(lo_int - 0.5, hi_int + 1.5, 1)
+    # Determine maximum breakpoint value from parameter or data
+    max_val = int(x_max) if x_max is not None else int(max(all_vals))
+    # Compute bin edges from 0.5 to max_val + bin_size in steps of bin_size
+    bin_edges = np.arange(0.5, max_val + bin_size, bin_size)
 
     # ---------- 4. plot ----------------------------------------------------
     plt.figure(figsize=(10, 6))
@@ -1824,7 +1825,7 @@ def histogram_breakpoint_plot_simple(
         if colour is None:
             colour = plt.cm.viridis(i / len(date_order))
 
-        label = f"{date_to_group[d]} – {d}"
+        label = f"{date_to_group[d]} – {d}"
         plt.hist(
             bpts, bins=bin_edges, alpha=alpha,
             color=colour, edgecolor=colour,
@@ -1832,8 +1833,15 @@ def histogram_breakpoint_plot_simple(
             label=label
         )
 
-    # ---------- 5. whole‑number ticks only ---------------------------------
-    plt.xticks(range(lo_int, hi_int + 1))
+    # ---------- 5. string-range x-labels -----------------------------------
+    if bin_size == 1:
+        plt.xticks(range(1, max_val + 1))
+    else:
+        # Center positions for each bar
+        centers = bin_edges[:-1] + bin_size / 2
+        # Labels like "1–2", "3–4", etc.
+        labels = [f"{int(edge + 0.5)}–{int(edge + bin_size - 0.5)}" for edge in bin_edges[:-1]]
+        plt.xticks(centers, labels, rotation=45)
 
     # ---------- 6. optional percentiles (unchanged) ------------------------
     if percentiles is not None:
@@ -1846,7 +1854,7 @@ def histogram_breakpoint_plot_simple(
             for p, col in zip(percentiles, cmap):
                 v = np.percentile(all_vals, p)
                 plt.axvline(v, color=col, ls="--",
-                            label=f"All {int(p)}th %ile = {v:.1f}")
+                            label=f"All {int(p)}th %ile = {v:.1f}")
         else:
             for grp, spec in percentiles.items():
                 data = grp_data.get(grp)
@@ -1857,12 +1865,12 @@ def histogram_breakpoint_plot_simple(
                     for p, col in zip(spec, cmap):
                         v = np.percentile(data, p)
                         plt.axvline(v, color=col, ls="--",
-                                    label=f"{grp} {int(p)}th %ile = {v:.1f}")
+                                    label=f"{grp} {int(p)}th %ile = {v:.1f}")
                 else:
                     for p, col in spec.items():
                         v = np.percentile(data, float(p))
                         plt.axvline(v, color=col, ls="--",
-                                    label=f"{grp} {int(p)}th %ile = {v:.1f}")
+                                    label=f"{grp} {int(p)}th %ile = {v:.1f}")
 
     # ---------- 7. cosmetics ----------------------------------------------
     plt.title(plot_title)
@@ -1881,7 +1889,7 @@ class HistogramBreakpointPlot(Scene):
     def __init__(
         self, dataframes, date_ranges, *, hist_colors=None,
         time_col="MM:DD:YYYY hh:mm:ss", event_col="Event",
-        histogram_buckets=10, alpha=0.8,
+        bin_size=1, x_max=None, alpha=0.8,
         time_per_hist=1.0, max_active=3,
         y_max=None, **kwargs
     ):
@@ -1907,7 +1915,10 @@ class HistogramBreakpointPlot(Scene):
 
         self.hist_colors  = hist_colors or {}
         self.time_col, self.event_col = time_col, event_col
-        self.buckets, self.alpha      = histogram_buckets, alpha
+        # Store bin_size and alpha; x_max and y_max determined after collecting break lengths
+        self.bin_size    = bin_size
+        self.x_max       = x_max
+        self.alpha       = alpha
         self.time_per, self.max_active = time_per_hist, max_active
         self.y_max_param = y_max
 
@@ -1930,24 +1941,33 @@ class HistogramBreakpointPlot(Scene):
                         date_breaks[d].append(left)
                         left = 0
 
-        # 3) common bin edges & y‑axis limit
+        # 3) determine x_max and y_max from collected break lengths
         all_vals = [v for lst in date_breaks.values() for v in lst]
-        lo = max(0, min(all_vals) - 0.5)
-        hi = max(all_vals) + 0.5
-        self.bin_edges = np.linspace(lo, hi, self.buckets + 1)
-
+        if not all_vals:
+            raise ValueError("No breakpoints found in data for animation.")
+        # fallback x_max to data maximum if not provided
+        if self.x_max is None:
+            self.x_max = int(max(all_vals))
+        else:
+            try:
+                self.x_max = int(self.x_max)
+            except Exception:
+                raise ValueError(f"Invalid x_max value: {self.x_max}")
+        # determine y-axis max using 5 bins of roughly equal size
         natural_max = max(len(lst) for lst in date_breaks.values())
-        self.y_max  = self.y_max_param or int(math.ceil(natural_max / 5.0) * 5)
+        self.y_max = self.y_max_param or int(math.ceil(natural_max / 5.0) * 5)
+        # store break data
         self.date_breaks = date_breaks
 
     # ────────────────────────────────────────────────────────────────────
     def construct(self):
+        # compute bin_edges upfront
+        bin_edges = np.arange(0.5, self.x_max + self.bin_size, self.bin_size)
+        self.bin_edges = bin_edges
         # 4) axes
-        y_step = max(1, math.ceil(self.y_max / 5))
         axes = Axes(
-            x_range=(self.bin_edges[0], self.bin_edges[-1],
-                     self.bin_edges[1]-self.bin_edges[0]),
-            y_range=(0, self.y_max, y_step),
+            x_range=(bin_edges[0], bin_edges[-1], self.bin_size),
+            y_range=(0, self.y_max, max(1, math.ceil(self.y_max/5))),
             axis_config={"include_tip": False},
             x_axis_config={"include_numbers": False},
             y_axis_config={"include_numbers": False},
@@ -1955,13 +1975,21 @@ class HistogramBreakpointPlot(Scene):
         self.add(axes)
 
         # 5) numeric tick labels (whole numbers only)
-        x_min_int = math.ceil(self.bin_edges[0])
-        x_max_int = math.floor(self.bin_edges[-1])
-        for x in range(x_min_int, x_max_int + 1):
-            lbl = Text(str(x), font_size=12)
-            lbl.next_to(axes.c2p(x, 0), DOWN, buff=0.1)
-            self.add(lbl)
-        for y in range(0, self.y_max + 1, y_step):
+        if self.bin_size == 1:
+            for x in range(1, self.x_max + 1):
+                lbl = Text(str(x), font_size=12)
+                lbl.next_to(axes.c2p(x, 0), DOWN, buff=0.1)
+                self.add(lbl)
+        else:
+            starts = np.arange(1, self.x_max + 1, self.bin_size)
+            centers = starts + self.bin_size/2 - 0.5
+            for i, left in enumerate(starts):
+                lbl = Text(f"{left}–{min(left+self.bin_size-1, self.x_max)}", font_size=12)
+                x_c = centers[i]
+                lbl.next_to(axes.c2p(x_c, 0), DOWN, buff=0.1)
+                self.add(lbl)
+
+        for y in range(0, self.y_max + 1, max(1, math.ceil(self.y_max/5))):
             lbl = Text(str(y), font_size=12)
             lbl.next_to(axes.c2p(self.bin_edges[0], y), LEFT, buff=0.1)
             self.add(lbl)
@@ -2038,7 +2066,7 @@ class HistogramBreakpointPlot(Scene):
 # ─── wrapper callable from a notebook ─────────────────────────────────────
 def histogram_breakpoint_plot_manim(
     dataframes, date_ranges, *, hist_colors=None,
-    histogram_buckets=10, alpha=0.8,
+    bin_size=1, x_max=None, alpha=0.8,
     time_per_hist=1.0, max_active=3,
     y_max=None, **scene_kwargs
 ):
@@ -2046,7 +2074,8 @@ def histogram_breakpoint_plot_manim(
         dataframes        = dataframes,
         date_ranges       = date_ranges,
         hist_colors       = hist_colors,
-        histogram_buckets = histogram_buckets,
+        bin_size          = bin_size,
+        x_max             = x_max,
         alpha             = alpha,
         time_per_hist     = time_per_hist,
         max_active        = max_active,
