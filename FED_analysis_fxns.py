@@ -1759,10 +1759,11 @@ def histogram_breakpoint_plot_simple(
     event_col="Event",
     bin_size=1,
     x_max=None,
-    alpha=0.4,
-    plot_title="Breakpoint Frequency Distribution",
+    style="histogram",  # 'histogram' (counts), 'density' (bar PDF), 'line' (line PDF), 'cdf' (cumulative distribution function)
+    alpha=1.0,
+    plot_title=None,
     plot_xlabel="Breakpoint Value",
-    plot_ylabel="Frequency",
+    plot_ylabel=None,
     percentiles=None
 ):
     # ---------- 1. normalise date→group -----------------------------------
@@ -1811,6 +1812,22 @@ def histogram_breakpoint_plot_simple(
     # ---------- 4. plot ----------------------------------------------------
     plt.figure(figsize=(10, 6))
 
+    # Determine default title and ylabel based on style
+    if plot_title is None:
+        if style == "histogram":
+            plot_title = "Breakpoint Frequency Distribution"
+        elif style == "cdf":
+            plot_title = "Breakpoint CDF"
+        else:
+            plot_title = "Breakpoint Probability Density"
+    if plot_ylabel is None:
+        if style == "histogram":
+            plot_ylabel = "Frequency"
+        elif style == "cdf":
+            plot_ylabel = "Cumulative Probability"
+        else:
+            plot_ylabel = "Probability Density"
+
     for i, d in enumerate(date_order):
         bpts = date_breaks[d]
         if not bpts:
@@ -1826,12 +1843,48 @@ def histogram_breakpoint_plot_simple(
             colour = plt.cm.viridis(i / len(date_order))
 
         label = f"{date_to_group[d]} – {d}"
-        plt.hist(
-            bpts, bins=bin_edges, alpha=alpha,
-            color=colour, edgecolor=colour,
-            histtype="stepfilled", linewidth=1,
-            label=label
-        )
+        # Plot raw histogram or density
+        if style == "histogram":
+            plt.hist(
+                bpts,
+                bins=bin_edges,
+                density=False,
+                alpha=alpha,
+                color=colour,
+                edgecolor=colour,
+                histtype="stepfilled",
+                linewidth=1,
+                label=label
+            )
+        elif style == "density":
+            plt.hist(
+                bpts,
+                bins=bin_edges,
+                density=True,
+                alpha=alpha,
+                color=colour,
+                edgecolor=colour,
+                histtype="stepfilled",
+                linewidth=1,
+                label=label
+            )
+        elif style == "line":
+            counts, edges = np.histogram(bpts, bins=bin_edges, density=True)
+            centers = edges[:-1] + bin_size / 2
+            plt.plot(
+                centers, counts, "-o",
+                color=colour, alpha=alpha, label=label
+            )
+        elif style == "cdf":
+            # cumulative distribution function
+            counts, edges = np.histogram(bpts, bins=bin_edges, density=False)
+            cum_counts = np.cumsum(counts)
+            cum_prob = cum_counts / cum_counts[-1]
+            # plot CDF as step function
+            plt.step(edges[1:], cum_prob, where='post',
+                     color=colour, alpha=alpha, label=label)
+        else:
+            raise ValueError(f"Unknown style: {style}. Use 'histogram', 'density', 'line', or 'cdf'.")
 
     # ---------- 5. string-range x-labels -----------------------------------
     if bin_size == 1:
