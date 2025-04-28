@@ -1074,12 +1074,17 @@ def group_pellet_averaged(
                 data_copy[time_col] = pd.to_datetime(data_copy[time_col], format='%m/%d/%Y %H:%M:%S', errors='coerce')
                 data_copy.set_index(time_col, inplace=True)
 
-                # Bin the data and compute differences over time
-                binned_data = data_copy[pellet_col].resample(bin_size).last()
+                # Bin the data, forward‐fill missing cumulative values, and compute differences (zeros on no‐event days)
+                binned_data = (
+                    data_copy[pellet_col]
+                    .resample(bin_size)
+                    .last()
+                    .ffill()     # carry forward last known cumulative total
+                    .fillna(0)  # initial NA → zero
+                )
                 binned_diff = binned_data.diff().clip(lower=0)
-
-                # Convert to numeric and drop NaNs
-                binned_diff = pd.to_numeric(binned_diff, errors='coerce').dropna()
+                # Ensure numeric dtype (retain zeros)
+                binned_diff = pd.to_numeric(binned_diff, errors='coerce')
 
                 # --- Baseline normalization ---
                 if baseline:
@@ -1190,6 +1195,163 @@ def group_pellet_averaged(
     # --- Final labeling and legend ---
     plt.title(plot_title.format(bin_size=bin_size))
     plt.xlabel(plot_xlabel)
+    plt.ylabel(plot_ylabel)
+    plt.legend(loc='best')
+    plt.tight_layout()
+    plt.show()
+
+def group_breakpoint_percentile_plot(
+    groups,
+    percentile=50,
+    time_col='MM:DD:YYYY hh:mm:ss',
+    fr_col='FR',
+    bin_size='1D',
+    baseline=None,
+    show_sem='shaded',
+    group_colors=None,
+    x_date_range=None,
+    x_labels=None,
+    tick_interval=1,
+    dashed_line_date1=None,
+    dashed_line_label1=None,
+    dashed_line_date2=None,
+    dashed_line_label2=None,
+    date_range_shaded=None,
+    shaded_label=None,
+    y_scale='linear',
+    y_max=None,
+    plot_title=None,
+    plot_xlabel='Day',
+    plot_ylabel=None
+):
+    """Plot per-day percentile breakpoint for each animal, baseline-normalize, then average across groups."""
+    plt.figure(figsize=(10, 6))
+    group_stats = {}
+
+    for group_label, dfs in groups.items():
+        color = (
+            group_colors.get(group_label)
+            if group_colors and group_label in group_colors
+            else plt.cm.viridis(len(group_stats) / len(groups))
+        )
+        individual_series = []
+
+        for df in dfs:
+            df_copy = df.copy()
+            df_copy[time_col] = pd.to_datetime(
+                df_copy[time_col], format='%m/%d/%Y %H:%M:%S', errors='coerce'
+            )
+            df_copy.sort_values(by=time_col, inplace=True)
+            df_copy.set_index(time_col, inplace=True)
+
+            # Extract breakpoints via FR resets
+            max_fr = 0
+            vals, times = [], []
+            fr_vals = df_copy[fr_col].fillna(method='ffill')
+            for i in range(len(fr_vals)):
+                fr = fr_vals.iat[i]
+                t = fr_vals.index[i]
+                max_fr = max(max_fr, fr)
+                if i + 1 < len(fr_vals) and fr_vals.iat[i+1] == 1:
+                    vals.append(max_fr)
+                    times.append(t)
+                    max_fr = 0
+            if not vals:
+                continue
+
+            bp_df = pd.DataFrame({'breakpoint': vals}, index=pd.to_datetime(times))
+
+            # Compute daily percentile
+            def calc_pct(x):
+                return np.nan if len(x) == 0 else np.percentile(x, percentile)
+            daily_pct = bp_df['breakpoint'].resample(bin_size).apply(calc_pct)
+
+            # Baseline normalization per animal
+            if baseline:
+                if isinstance(baseline, (list, tuple)):
+                    baseline_dates = pd.to_datetime(
+                        list(baseline), format='%m/%d/%y', errors='coerce'
+                    )
+                else:
+                    baseline_dates = pd.to_datetime(
+                        [baseline], format='%m/%d/%y', errors='coerce'
+                    )
+                baseline_dates = baseline_dates.dropna()
+                bp_dates = pd.Index(daily_pct.index.date)
+                base_vals = daily_pct[bp_dates.isin(baseline_dates.date)]
+                if not base_vals.empty:
+                    base_mean = base_vals.mean()
+                    if base_mean > 0:
+                        daily_pct = (daily_pct / base_mean) * 100
+
+            individual_series.append(daily_pct)
+
+        if not individual_series:
+            continue
+
+        combined = pd.concat(individual_series, axis=1)
+        mean_series = combined.mean(axis=1)
+        sem_series = combined.sem(axis=1)
+        group_stats[group_label] = (mean_series, sem_series, color)
+
+    # Plot group means + SEM
+    for label, (mean_s, sem_s, color) in group_stats.items():
+        plt.plot(mean_s.index, mean_s, '-o', color=color, label=label)
+        if show_sem == 'shaded':
+            plt.fill_between(mean_s.index, mean_s - sem_s, mean_s + sem_s, color=color, alpha=0.2)
+        elif show_sem == 'error_bars':
+            plt.errorbar(mean_s.index, mean_s, yerr=sem_s, fmt='o', color=color, capsize=4)
+
+    # Add dashed lines
+    def add_lines(dates, lab, col):
+        if dates:
+            for i, d in enumerate(dates):
+                dt = pd.to_datetime(d, format='%m/%d/%y', errors='coerce')
+                if pd.notnull(dt):
+                    plt.axvline(dt, color=col, linestyle='--', label=lab if i == 0 else None)
+
+    add_lines(dashed_line_date1, dashed_line_label1, 'black')
+    add_lines(dashed_line_date2, dashed_line_label2, 'blue')
+
+    # Shaded date ranges
+    if date_range_shaded:
+        for i, (start, end) in enumerate(date_range_shaded):
+            st = pd.to_datetime(start, format='%m/%d/%y', errors='coerce')
+            en = pd.to_datetime(end, format='%m/%d/%y', errors='coerce')
+            if pd.notnull(st) and pd.notnull(en):
+                plt.axvspan(st, en, color='lightgrey', alpha=0.5, label=shaded_label if i == 0 else None)
+
+    # X-axis formatting
+    if x_date_range:
+        plt.xlim(
+            pd.to_datetime(x_date_range[0], format='%m/%d/%y', errors='coerce'),
+            pd.to_datetime(x_date_range[1], format='%m/%d/%y', errors='coerce')
+        )
+    if x_labels and x_date_range:
+        sd = pd.to_datetime(x_date_range[0], format='%m/%d/%y', errors='coerce')
+        ed = pd.to_datetime(x_date_range[1], format='%m/%d/%y', errors='coerce')
+        dates = pd.date_range(start=sd, end=ed, periods=len(x_labels))
+        ticks = dates[::tick_interval]
+        labs = x_labels[::tick_interval]
+        plt.xticks(ticks, labs)
+
+    # Y-axis scaling
+    if isinstance(y_scale, (int, float)):
+        plt.ylim(0, y_scale)
+    elif y_scale == 'log':
+        plt.yscale('log')
+    else:
+        if y_max is None:
+            y_max = plt.gca().get_ylim()[1]
+        plt.ylim(0, y_max)
+
+    # Labels and title
+    if plot_title is None:
+        plot_title = f"{percentile}th Percentile Breakpoint per {bin_size}"
+    plt.title(plot_title)
+    plt.xlabel(plot_xlabel)
+    if plot_ylabel is None:
+        plot_ylabel = f"{percentile}th Percentile Breakpoint"
     plt.ylabel(plot_ylabel)
     plt.legend(loc='best')
     plt.tight_layout()
@@ -1746,202 +1908,6 @@ def multi_breakpoint_plot(dfs, time_col='MM:DD:YYYY hh:mm:ss', fr_col='FR', labe
                         color='lightgrey', alpha=0.5)
 
     plt.tight_layout()
-    plt.legend()
-    plt.show()
-
-
-def histogram_breakpoint_plot_simple(
-    dataframes,
-    date_ranges,
-    *,
-    hist_colors=None,
-    time_col="MM:DD:YYYY hh:mm:ss",
-    event_col="Event",
-    bin_size=1,
-    x_max=None,
-    style="histogram",  # 'histogram' (counts), 'density' (bar PDF), 'line' (line PDF), 'cdf' (cumulative distribution function)
-    alpha=1.0,
-    plot_title=None,
-    plot_xlabel="Breakpoint Value",
-    plot_ylabel=None,
-    percentiles=None
-):
-    # ---------- 1. normalise date→group -----------------------------------
-    if any(isinstance(v, (list, tuple)) for v in date_ranges.values()):
-        date_to_group = {d: g
-                         for g, ds in date_ranges.items()
-                         for d in (ds if isinstance(ds,(list,tuple)) else [ds])}
-        date_order = [d for g in date_ranges
-                        for d in (date_ranges[g] if isinstance(date_ranges[g],(list,tuple))
-                                  else [date_ranges[g]])]
-    else:
-        date_to_group = date_ranges.copy()
-        date_order = list(date_ranges.keys())
-
-    # ---------- 2. collect breakpoints ------------------------------------
-    date_breaks = {d: [] for d in date_order}
-
-    for df in dataframes:
-        df = df.copy()
-        df[time_col] = pd.to_datetime(df[time_col],
-                                      format="%m/%d/%Y %H:%M:%S")
-        for d in date_order:
-            start = pd.to_datetime(d, format="%m/%d/%y")
-            end   = start + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-            sub   = df[(df[time_col] >= start) & (df[time_col] <= end)]
-
-            left = 0
-            for _, row in sub.iterrows():
-                if row[event_col] == "Left":
-                    left += 1
-                elif row[event_col] == "Pellet" and left:
-                    date_breaks[d].append(left)
-                    left = 0
-
-    # ---------- 3. establish integer‑centred bins --------------------------
-    all_vals = [v for vs in date_breaks.values() for v in vs]
-    if not all_vals:
-        print("No breakpoints found.")
-        return
-
-    # Determine maximum breakpoint value from parameter or data
-    max_val = int(x_max) if x_max is not None else int(max(all_vals))
-    # Compute bin edges from 0.5 to max_val + bin_size in steps of bin_size
-    bin_edges = np.arange(0.5, max_val + bin_size, bin_size)
-
-    # ---------- 4. plot ----------------------------------------------------
-    plt.figure(figsize=(10, 6))
-    # ensure x-axis covers full bins for all styles (so CDF scales with bin_size)
-    plt.xlim(bin_edges[0], bin_edges[-1])
-
-    # Determine default title and ylabel based on style
-    if plot_title is None:
-        if style == "histogram":
-            plot_title = "Breakpoint Frequency Distribution"
-        elif style == "cdf":
-            plot_title = "Breakpoint CDF"
-        else:
-            plot_title = "Breakpoint Probability Density"
-    if plot_ylabel is None:
-        if style == "histogram":
-            plot_ylabel = "Frequency"
-        elif style == "cdf":
-            plot_ylabel = "Cumulative Probability"
-        else:
-            plot_ylabel = "Probability Density"
-
-    for i, d in enumerate(date_order):
-        bpts = date_breaks[d]
-        if not bpts:
-            continue
-
-        # colour lookup
-        colour = None
-        if hist_colors:
-            colour = (hist_colors.get(d) or
-                      hist_colors.get(d.replace('/','')) or
-                      hist_colors.get(date_to_group[d], {}).get(d))
-        if colour is None:
-            colour = plt.cm.viridis(i / len(date_order))
-
-        label = f"{date_to_group[d]} – {d}"
-        # Plot raw histogram or density
-        if style == "histogram":
-            plt.hist(
-                bpts,
-                bins=bin_edges,
-                density=False,
-                alpha=alpha,
-                color=colour,
-                edgecolor=colour,
-                histtype="stepfilled",
-                linewidth=1,
-                label=label
-            )
-        elif style == "density":
-            plt.hist(
-                bpts,
-                bins=bin_edges,
-                density=True,
-                alpha=alpha,
-                color=colour,
-                edgecolor=colour,
-                histtype="stepfilled",
-                linewidth=1,
-                label=label
-            )
-        elif style == "line":
-            counts, edges = np.histogram(bpts, bins=bin_edges, density=True)
-            centers = edges[:-1] + bin_size / 2
-            plt.plot(
-                centers, counts, "-o",
-                color=colour, alpha=alpha, label=label
-            )
-        elif style == "cdf":
-            # cumulative distribution function grouped by bin_size
-            counts, edges = np.histogram(bpts, bins=bin_edges, density=False)
-            cum_counts = np.cumsum(counts)
-            cum_prob = cum_counts / cum_counts[-1]
-            # x-values at bin centers
-            centers = edges[:-1] + bin_size / 2
-            # plot CDF as step function
-            plt.step(centers, cum_prob, where='post', color=colour, alpha=alpha, label=label)
-        else:
-            raise ValueError(f"Unknown style: {style}. Use 'histogram', 'density', 'line', or 'cdf'.")
-
-    # ---------- 5. string-range x-labels -----------------------------------
-    if bin_size == 1:
-        # single breakpoint values
-        ticks = np.arange(1, max_val + 1)
-        labels = [str(int(x)) for x in ticks]
-        plt.xticks(ticks, labels)
-    else:
-        # range labels for each bin interval
-        centers = bin_edges[:-1] + bin_size / 2
-        labels = [f"{int(edge+0.5)}–{int(edge+bin_size-0.5)}" for edge in bin_edges[:-1]]
-        plt.xticks(centers, labels, rotation=45)
-
-    # ---------- 6. optional percentiles (unchanged) ------------------------
-    if percentiles is not None:
-        grp_data = {}
-        for d, grp in date_to_group.items():
-            grp_data.setdefault(grp, []).extend(date_breaks[d])
-
-        if isinstance(percentiles, list):
-            cmap = plt.cm.tab10(np.linspace(0, 1, len(percentiles)))
-            for p, col in zip(percentiles, cmap):
-                v = np.percentile(all_vals, p)
-                plt.axvline(v, color=col, ls="--",
-                            label=f"All {int(p)}th %ile = {v:.1f}")
-        else:
-            for grp, spec in percentiles.items():
-                data = grp_data.get(grp)
-                if not data:
-                    continue
-                if isinstance(spec, (list, tuple)):
-                    cmap = plt.cm.tab10(np.linspace(0, 1, len(spec)))
-                    for p, col in zip(spec, cmap):
-                        v = np.percentile(data, p)
-                        plt.axvline(v, color=col, ls="--",
-                                    label=f"{grp} {int(p)}th %ile = {v:.1f}")
-                else:
-                    for p, col in spec.items():
-                        v = np.percentile(data, float(p))
-                        plt.axvline(v, color=col, ls="--",
-                                    label=f"{grp} {int(p)}th %ile = {v:.1f}")
-
-    # ---------- 7. cosmetics ----------------------------------------------
-    plt.title(plot_title)
-    plt.xlabel(plot_xlabel)
-    plt.ylabel(plot_ylabel)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-
-
-
-
 
 class HistogramBreakpointPlot(Scene):
     def __init__(
@@ -2140,3 +2106,144 @@ def histogram_breakpoint_plot_manim(
         y_max             = y_max,
         **scene_kwargs
     ).render()
+
+# alias backward compatibility
+group_breakpoint_plot = group_breakpoint_percentile_plot  # remove stray '%'
+
+# simple histogram of breakpoints by date group
+def histogram_breakpoint_plot_simple(
+    dataframes,
+    date_ranges,
+    *,
+    hist_colors=None,
+    time_col="MM:DD:YYYY hh:mm:ss",
+    event_col="Event",
+    bin_size=1,
+    x_max=None,
+    style="histogram",
+    alpha=1.0,
+    plot_title=None,
+    plot_xlabel="Breakpoint Value",
+    plot_ylabel=None,
+    percentiles=None
+):
+    """Plot breakpoint distributions for given dates by style (histogram, density, line, CDF)."""
+    # 1. normalize date → group mapping
+    if any(isinstance(v, (list, tuple)) for v in date_ranges.values()):
+        date_to_group = {d: g for g, ds in date_ranges.items() for d in (ds if isinstance(ds,(list,tuple)) else [ds])}
+        date_order = [d for g in date_ranges for d in (date_ranges[g] if isinstance(date_ranges[g],(list,tuple)) else [date_ranges[g]])]
+    else:
+        date_to_group = date_ranges.copy()
+        date_order = list(date_ranges.keys())
+
+    # 2. collect breakpoints
+    date_breaks = {d: [] for d in date_order}
+    for df in dataframes:
+        df2 = df.copy()
+        df2[time_col] = pd.to_datetime(df2[time_col], format='%m/%d/%Y %H:%M:%S')
+        for d in date_order:
+            start = pd.to_datetime(d, format='%m/%d/%y')
+            end = start + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            sub = df2[(df2[time_col] >= start) & (df2[time_col] <= end)]
+            left = 0
+            for _, row in sub.iterrows():
+                if row.get(event_col) == "Left":
+                    left += 1
+                elif row.get(event_col) == "Pellet" and left:
+                    date_breaks[d].append(left)
+                    left = 0
+
+    all_vals = [v for vs in date_breaks.values() for v in vs]
+    if not all_vals:
+        print("No breakpoints found.")
+        return
+
+    max_val = int(x_max) if x_max is not None else int(max(all_vals))
+    bin_edges = np.arange(0.5, max_val + bin_size, bin_size)
+
+    # 3. plot setup
+    plt.figure(figsize=(10, 6))
+    plt.xlim(bin_edges[0], bin_edges[-1])
+
+    if plot_title is None:
+        if style == 'histogram':
+            plot_title = 'Breakpoint Frequency Distribution'
+        elif style == 'cdf':
+            plot_title = 'Breakpoint CDF'
+        else:
+            plot_title = 'Breakpoint Probability Density'
+    if plot_ylabel is None:
+        if style == 'histogram': plot_ylabel = 'Frequency'
+        elif style == 'cdf': plot_ylabel = 'Cumulative Probability'
+        else: plot_ylabel = 'Probability Density'
+
+    for i, d in enumerate(date_order):
+        bpts = date_breaks[d]
+        if not bpts: continue
+        colour = None
+        if hist_colors:
+            c = hist_colors.get(d) or hist_colors.get(d.replace('/',''))
+            if c is None: c = hist_colors.get(date_to_group[d],{}).get(d)
+            colour = c
+        if colour is None:
+            colour = plt.cm.viridis(i/len(date_order))
+        label = f"{date_to_group[d]} – {d}"
+        if style == 'histogram':
+            plt.hist(bpts, bins=bin_edges, density=False, alpha=alpha,
+                     color=colour, edgecolor=colour, histtype='stepfilled', linewidth=1, label=label)
+        elif style == 'density':
+            plt.hist(bpts, bins=bin_edges, density=True, alpha=alpha,
+                     color=colour, edgecolor=colour, histtype='stepfilled', linewidth=1, label=label)
+        elif style == 'line':
+            counts, edges = np.histogram(bpts, bins=bin_edges, density=True)
+            centers = edges[:-1] + bin_size/2
+            plt.plot(centers, counts, '-o', color=colour, alpha=alpha, label=label)
+        elif style == 'cdf':
+            counts, edges = np.histogram(bpts, bins=bin_edges, density=False)
+            cum = np.cumsum(counts)
+            cum_prob = cum / cum[-1]
+            centers = edges[:-1] + bin_size/2
+            plt.step(centers, cum_prob, where='post', color=colour, alpha=alpha, label=label)
+        else:
+            raise ValueError("Unknown style: use 'histogram','density','line','cdf'.")
+
+    # 4. x-ticks
+    if bin_size == 1:
+        ticks = np.arange(1, max_val+1)
+        plt.xticks(ticks, [str(int(x)) for x in ticks])
+    else:
+        starts = np.arange(1, max_val+1, bin_size)
+        labels = [f"{int(s)}–{int(min(s+bin_size-1,max_val))}" for s in starts]
+        centers = starts + bin_size/2 - 0.5
+        plt.xticks(centers, labels, rotation=45)
+
+    # 5. optional percentiles lines
+    if percentiles is not None:
+        grp_data = {g: [] for g in set(date_to_group.values())}
+        for d, g in date_to_group.items(): grp_data[g].extend(date_breaks[d])
+        if isinstance(percentiles, (list,tuple)):
+            cmap = plt.cm.tab10(np.linspace(0,1,len(percentiles)))
+            for p,c in zip(percentiles,cmap):
+                v = np.percentile(all_vals,p)
+                plt.axvline(v,color=c,ls='--',label=f"All {int(p)}th %ile = {v:.1f}")
+        else:
+            for g,spec in percentiles.items():
+                data=grp_data.get(g,[])
+                if not data: continue
+                if isinstance(spec,(list,tuple)):
+                    cmap = plt.cm.tab10(np.linspace(0,1,len(spec)))
+                    for p,c in zip(spec,cmap):
+                        v = np.percentile(data,p)
+                        plt.axvline(v,color=c,ls='--',label=f"{g} {int(p)}th %ile = {v:.1f}")
+                else:
+                    for p,c in spec.items():
+                        v = np.percentile(data,float(p))
+                        plt.axvline(v,color=c,ls='--',label=f"{g} {int(p)}th %ile = {v:.1f}")
+
+    # 6. finish
+    plt.title(plot_title)
+    plt.xlabel(plot_xlabel)
+    plt.ylabel(plot_ylabel)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()

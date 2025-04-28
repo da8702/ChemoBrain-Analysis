@@ -105,38 +105,41 @@ def analyze_foraging_behavior(data: pd.DataFrame) -> Dict:
     # what analyses you want to perform
     pass
 
-def get_base_path() -> str:
+def get_base_path(group: str) -> str:
     """
-    Get the base path for data based on the operating system.
+    Get the base path for data based on the operating system and group.
     
     Returns:
     --------
     str
-        Base path for the data directory
+        Base path for the specified group's data directory (e.g., Foraging_Cisplatin)
     """
     system = platform.system()
     if system == "Darwin":  # macOS
-        return "/Volumes/ChemoBrain/ChemoBrain-Analysis/Data/Foraging_Cisplatin"
+        data_root = "/Volumes/ChemoBrain/ChemoBrain-Analysis/Data"
     elif system == "Windows":
         # Adjust this path for Windows if needed
-        return "\\\\path\\to\\windows\\ChemoBrain\\ChemoBrain-Analysis\\Data\\Foraging_Cisplatin"
+        data_root = "\\\\path\\to\\windows\\ChemoBrain\\ChemoBrain-Analysis\\Data"
     else:
         raise OSError(f"Unsupported operating system: {system}")
+    return os.path.join(data_root, f"Foraging_{group}")
 
-def import_animal_data(cohort: str, animal_id: Union[str, Tuple[str, str], List[str]], 
+def import_animal_data(group: str, animal_id: Union[str, Tuple[str, str], List[str]], cohort: str = None,
                       global_vars: Dict = None) -> Dict[str, Dict]:
     """
-    Import data for specified animals and assign to global variables.
+    Import data for specified group and animals, with optional cohort, and assign to global variables.
     
     Parameters:
     -----------
-    cohort : str
-        Cohort name (e.g., "Cis3")
+    group : str
+        Group name (e.g., "Cisplatin")
     animal_id : Union[str, Tuple[str, str], List[str]]
         Animal ID(s) to import. Can be:
         - Single ID (e.g., "DA76")
         - Range tuple (e.g., ("DA76", "DA86"))
         - List of IDs (e.g., ["DA76", "DA79", "DA83"])
+    cohort : str, optional
+        Cohort name (e.g., "Cis3"). If None, auto-detects the cohort directory if only one exists.
     global_vars : Dict, optional
         Dictionary to store global variables. If None, uses globals()
         
@@ -148,8 +151,17 @@ def import_animal_data(cohort: str, animal_id: Union[str, Tuple[str, str], List[
     if global_vars is None:
         global_vars = globals()
     
-    base_path = get_base_path()
-    cohort_path = os.path.join(base_path, cohort)
+    # Determine the base path for the specified group
+    base_group_path = get_base_path(group)
+    # Auto-detect cohort if not specified and only one exists
+    if cohort is None:
+        cohort_dirs = [d for d in glob.glob(os.path.join(base_group_path, "*")) if os.path.isdir(d)]
+        if len(cohort_dirs) == 1:
+            cohort_path = cohort_dirs[0]
+        else:
+            raise ValueError(f"Multiple cohorts found for group {group}. Please specify a cohort.")
+    else:
+        cohort_path = os.path.join(base_group_path, cohort)
     
     # Determine which animals to process
     if isinstance(animal_id, str):
