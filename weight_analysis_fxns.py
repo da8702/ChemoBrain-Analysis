@@ -289,8 +289,8 @@ def plot_animal_groups_averaged(
     tick_interval=1,        # Controls the frequency of x-ticks
     show_sem='shaded',      # Options: 'shaded', 'error_bars', or None
     baseline=None,          # Baseline parameter for normalization
-    date_range_shaded=None, # List of (start_date, end_date) tuples to shade
-    shaded_label=None       # Label for the shaded region(s)
+    date_range_shaded=None, # List of (start_date, end_date) tuples for shaded regions
+    shaded_label=None       # Label for shaded regions
 ):
     """
     Plot averaged weight measurements for groups of animals with error bars or shaded SEM.
@@ -409,10 +409,23 @@ def plot_animal_groups_averaged(
     # Plot vertical lines for provided pr_date# with different colors
     pr_dates  = [pr_date1,  pr_date2,  pr_date3,  pr_date4]
     pr_labels = [pr_label1, pr_label2, pr_label3, pr_label4]
+
     for i, (pdate, plabel) in enumerate(zip(pr_dates, pr_labels)):
         if pdate and plabel:
-            vcolor = default_colors[i % len(default_colors)]
-            plt.axvline(pd.to_datetime(pdate), color=vcolor, linestyle='--', label=plabel)
+            # Allow a single date or a list/tuple of dates
+            dates_to_plot = pdate if isinstance(pdate, (list, tuple)) else [pdate]
+            # Default to black for the first PR line, otherwise use palette
+            if i == 0:
+                vcolor = 'black'
+            else:
+                vcolor = default_colors[i % len(default_colors)]
+            for j, date in enumerate(dates_to_plot):
+                dt = pd.to_datetime(date, errors='coerce')
+                # Only add legend label for the first line
+                if j == 0:
+                    plt.axvline(dt, color=vcolor, linestyle='--', label=plabel)
+                else:
+                    plt.axvline(dt, color=vcolor, linestyle='--')
 
     # ----- Add shaded date ranges (with one legend entry) -----
     if date_range_shaded:
