@@ -1,226 +1,444 @@
 import os
 import numpy as np
 import pandas as pd
-import scipy.io as sio
 import matplotlib.pyplot as plt
 import seaborn as sns
-from pathlib import Path
-from typing import Dict, List, Tuple, Union
-import h5py
-import platform
+from scipy.io import loadmat
+from scipy.ndimage import gaussian_filter1d
 import glob
+import datetime
 
-def load_mat_file(file_path: str) -> Dict:
-    """
-    Load a MATLAB .mat file and return its contents as a dictionary.
-    
-    Parameters:
-    -----------
-    file_path : str
-        Path to the .mat file
-        
-    Returns:
-    --------
-    Dict
-        Dictionary containing the contents of the .mat file
-    """
-    try:
-        # Try loading with scipy.io first
-        return sio.loadmat(file_path)
-    except NotImplementedError:
-        # If that fails, try loading with h5py
-        with h5py.File(file_path, 'r') as f:
-            return {key: f[key][()] for key in f.keys()}
+# Set plotting parameters
+plt.rcParams['font.size'] = '16'
+plt.rcParams['savefig.dpi'] = 80
+plt.rcParams['figure.dpi'] = 80
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
+pd.set_option('display.max_rows', 30)
+pd.set_option('display.min_rows', 30)
 
-def get_session_data(base_path: str) -> pd.DataFrame:
-    """
-    Recursively find and load all session data from .mat files.
-    
-    Parameters:
-    -----------
-    base_path : str
-        Base path to start searching for .mat files
-        
-    Returns:
-    --------
-    pd.DataFrame
-        DataFrame containing all session data
-    """
-    # This is a placeholder - we'll need to customize this based on
-    # the actual structure of your .mat files
-    pass
+def extract_datetime(file_name):
+    """Extract datetime from filename."""
+    date_format = "%d-%b-%Y %H:%M:%S"
+    date_time_str = file_name.split('/')[-1].split('_')[0]
+    return datetime.datetime.strptime(date_time_str, date_format)
 
-def process_session_data(mat_data: Dict) -> pd.DataFrame:
-    """
-    Process raw MATLAB data into a pandas DataFrame.
-    
-    Parameters:
-    -----------
-    mat_data : Dict
-        Dictionary containing MATLAB data
-        
-    Returns:
-    --------
-    pd.DataFrame
-        Processed data in DataFrame format
-    """
-    # This is a placeholder - we'll need to customize this based on
-    # the actual structure of your .mat files
-    pass
+def proc_foraging_df(behav_df, subj_name, condition, session):
+    """Process foraging behavior data to add useful metrics for plotting."""
+    print(f"[DEBUG] Starting proc_foraging_df for {subj_name} session {session} | behav_df shape: {behav_df.shape}")
+    # Handle case where there are fewer than 2 trials (must be first!)
+    if len(behav_df) < 2:
+        print(f"[DEBUG] Session too short for {subj_name} session {session}: {len(behav_df)} trial(s)")
+        behav_df['reward_number'] = [0] * len(behav_df)
+        behav_df['name'] = subj_name
+        behav_df['condition'] = condition
+        behav_df['session_number'] = session
+        behav_df['switch'] = [0] * len(behav_df)
+        behav_df['switch_prob'] = [0] * len(behav_df)
+        behav_df['stay_prob'] = [1] * len(behav_df)
+        behav_df['trial_number'] = list(range(len(behav_df)))
+        behav_df['poke_number'] = [0] * len(behav_df)
+        behav_df['trial_type'] = behav_df['LeftAmount'] if 'LeftAmount' in behav_df else [None] * len(behav_df)
+        behav_df['reward_amount'] = behav_df['LeftAmount'] if 'LeftAmount' in behav_df else [None] * len(behav_df)
+        print(f"[DEBUG] Returning early for short session: columns = {behav_df.columns.tolist()}")
+        return behav_df
 
-def plot_session_data(data: pd.DataFrame, 
-                     animal_id: str,
-                     save_path: str = None) -> None:
-    """
-    Create plots for session data.
-    
-    Parameters:
-    -----------
-    data : pd.DataFrame
-        Processed session data
-    animal_id : str
-        ID of the animal being plotted
-    save_path : str, optional
-        Path to save the plot. If None, plot is displayed.
-    """
-    # This is a placeholder - we'll need to customize this based on
-    # what plots you want to create
-    pass
+    # Robustly determine starting side
+    current_side = None
+    rsize = None
+    if len(behav_df) >= 2:
+        if not np.isnan(behav_df.iloc[0]['LeftAmount']) and not np.isnan(behav_df.iloc[1]['LeftAmount']):
+            current_side = 'left'
+            rsize = behav_df.iloc[0]['LeftAmount']
+        elif not np.isnan(behav_df.iloc[0]['RightAmount']) and not np.isnan(behav_df.iloc[1]['RightAmount']):
+            current_side = 'right'
+            rsize = behav_df.iloc[0]['RightAmount']
+        elif not np.isnan(behav_df.iloc[0]['LeftAmount']):
+            current_side = 'left'
+            rsize = behav_df.iloc[0]['LeftAmount']
+        elif not np.isnan(behav_df.iloc[0]['RightAmount']):
+            current_side = 'right'
+            rsize = behav_df.iloc[0]['RightAmount']
+    # If still ambiguous, try just the first trial
+    if current_side is None:
+        if not np.isnan(behav_df.iloc[0]['LeftAmount']):
+            current_side = 'left'
+            rsize = behav_df.iloc[0]['LeftAmount']
+        elif not np.isnan(behav_df.iloc[0]['RightAmount']):
+            current_side = 'right'
+            rsize = behav_df.iloc[0]['RightAmount']
+    # If still ambiguous, fill with NaNs and return
+    if current_side is None:
+        print(f"[DEBUG] Could not determine starting side for {subj_name} session {session}. Filling with NaNs.")
+        n = len(behav_df)
+        behav_df['reward_number'] = [np.nan] * n
+        behav_df['name'] = [subj_name] * n
+        behav_df['condition'] = [condition] * n
+        behav_df['session_number'] = [session] * n
+        behav_df['switch'] = [np.nan] * n
+        behav_df['switch_prob'] = [np.nan] * n
+        behav_df['stay_prob'] = [np.nan] * n
+        behav_df['trial_number'] = list(range(n))
+        behav_df['poke_number'] = [np.nan] * n
+        behav_df['trial_type'] = [np.nan] * n
+        behav_df['reward_amount'] = [np.nan] * n
+        print(f"[DEBUG] Returning early for ambiguous session: columns = {behav_df.columns.tolist()}")
+        return behav_df
 
-def analyze_foraging_behavior(data: pd.DataFrame) -> Dict:
-    """
-    Analyze foraging behavior metrics.
-    
-    Parameters:
-    -----------
-    data : pd.DataFrame
-        Processed session data
-        
-    Returns:
-    --------
-    Dict
-        Dictionary containing analysis results
-    """
-    # This is a placeholder - we'll need to customize this based on
-    # what analyses you want to perform
-    pass
+    print(f"[DEBUG] Proceeding with full processing for {subj_name} session {session} | starting side: {current_side}, rsize: {rsize}")
+    probe_poke = ["first"]
+    left = []
+    reward_amount = []
+    reward_number = []
+    starting_rsize = []
+    trial_number = []
+    epoch_number = []
+    n_trials = 0
+    n_epochs = 0
+    n_rewards = 0
 
-def get_base_path(group: str) -> str:
-    """
-    Get the base path for data based on the operating system and group.
-    
-    Returns:
-    --------
-    str
-        Base path for the specified group's data directory (e.g., Foraging_Cisplatin)
-    """
-    system = platform.system()
-    if system == "Darwin":  # macOS
-        data_root = "/Volumes/ChemoBrain/ChemoBrain-Analysis/Data"
-    elif system == "Windows":
-        # Adjust this path for Windows if needed
-        data_root = "\\\\path\\to\\windows\\ChemoBrain\\ChemoBrain-Analysis\\Data"
-    else:
-        raise OSError(f"Unsupported operating system: {system}")
-    return os.path.join(data_root, f"Foraging_{group}")
-
-def import_animal_data(group: str, animal_id: Union[str, Tuple[str, str], List[str]], cohort: str = None,
-                      global_vars: Dict = None) -> Dict[str, Dict]:
-    """
-    Import data for specified group and animals, with optional cohort, and assign to global variables.
-    
-    Parameters:
-    -----------
-    group : str
-        Group name (e.g., "Cisplatin")
-    animal_id : Union[str, Tuple[str, str], List[str]]
-        Animal ID(s) to import. Can be:
-        - Single ID (e.g., "DA76")
-        - Range tuple (e.g., ("DA76", "DA86"))
-        - List of IDs (e.g., ["DA76", "DA79", "DA83"])
-    cohort : str, optional
-        Cohort name (e.g., "Cis3"). If None, auto-detects the cohort directory if only one exists.
-    global_vars : Dict, optional
-        Dictionary to store global variables. If None, uses globals()
-        
-    Returns:
-    --------
-    Dict[str, Dict]
-        Dictionary containing imported data for each animal
-    """
-    if global_vars is None:
-        global_vars = globals()
-    
-    # Determine the base path for the specified group
-    base_group_path = get_base_path(group)
-    # Auto-detect cohort if not specified and only one exists
-    if cohort is None:
-        cohort_dirs = [d for d in glob.glob(os.path.join(base_group_path, "*")) if os.path.isdir(d)]
-        if len(cohort_dirs) == 1:
-            cohort_path = cohort_dirs[0]
+    for i in range(len(behav_df)):
+        left_amt = behav_df.iloc[i]['LeftAmount']
+        right_amt = behav_df.iloc[i]['RightAmount']
+        print(f"[DEBUG] Trial {i}: LeftAmount={left_amt}, RightAmount={right_amt}, current_side={current_side}")
+        n_epochs += 1
+        n_rewards += 1
+        switched = 0.0
+        # If current_side is None, append NaN and continue
+        if current_side is None:
+            print(f"[DEBUG] Trial {i}: current_side is None, appending NaNs to all lists.")
+            left.append(np.nan)
+            reward_amount.append(np.nan)
+            reward_number.append(np.nan)
+            starting_rsize.append(np.nan)
+            trial_number.append(i)
+            epoch_number.append(np.nan)
+            continue
+        if np.isnan(left_amt) and (current_side == 'left'):
+            print(f"[DEBUG] Trial {i}: left_amt is NaN and current_side is left")
+            if not np.isnan(right_amt):
+                rsize = right_amt
+                current_side = 'right'
+                switched = 1.0
+                n_trials += 1
+                n_epochs = 0
+            else:
+                print(f"[DEBUG] Trial {i}: Both left_amt and right_amt are NaN. Appending NaNs.")
+                left.append(np.nan)
+                reward_amount.append(np.nan)
+                reward_number.append(np.nan)
+                starting_rsize.append(np.nan)
+                trial_number.append(i)
+                epoch_number.append(np.nan)
+                continue
+        elif np.isnan(right_amt) and (current_side == 'right'):
+            print(f"[DEBUG] Trial {i}: right_amt is NaN and current_side is right")
+            if not np.isnan(left_amt):
+                rsize = left_amt
+                current_side = 'left'
+                switched = 1.0
+                n_trials += 1
+                n_epochs = 0
+            else:
+                print(f"[DEBUG] Trial {i}: Both right_amt and left_amt are NaN. Appending NaNs.")
+                left.append(np.nan)
+                reward_amount.append(np.nan)
+                reward_number.append(np.nan)
+                starting_rsize.append(np.nan)
+                trial_number.append(i)
+                epoch_number.append(np.nan)
+                continue
+        # Normal processing
+        if current_side == 'left':
+            print(f"[DEBUG] Trial {i}: current_side is left")
+            if np.isnan(left_amt):
+                print(f"[DEBUG] Trial {i}: left_amt is NaN when current_side is left. Appending NaNs.")
+                left.append(np.nan)
+                reward_amount.append(np.nan)
+                reward_number.append(np.nan)
+                starting_rsize.append(np.nan)
+                trial_number.append(i)
+                epoch_number.append(np.nan)
+                continue
+            reward_amount.append(left_amt)
+        elif current_side == 'right':
+            print(f"[DEBUG] Trial {i}: current_side is right")
+            if np.isnan(right_amt):
+                print(f"[DEBUG] Trial {i}: right_amt is NaN when current_side is right. Appending NaNs.")
+                left.append(np.nan)
+                reward_amount.append(np.nan)
+                reward_number.append(np.nan)
+                starting_rsize.append(np.nan)
+                trial_number.append(i)
+                epoch_number.append(np.nan)
+                continue
+            reward_amount.append(right_amt)
         else:
-            raise ValueError(f"Multiple cohorts found for group {group}. Please specify a cohort.")
+            print(f"[DEBUG] Trial {i}: current_side is invalid. Appending NaNs.")
+            left.append(np.nan)
+            reward_amount.append(np.nan)
+            reward_number.append(np.nan)
+            starting_rsize.append(np.nan)
+            trial_number.append(i)
+            epoch_number.append(np.nan)
+            continue
+        left.append(switched)
+        reward_number.append(n_rewards)
+        starting_rsize.append(rsize)
+        trial_number.append(n_trials)
+        epoch_number.append(n_epochs)
+
+    # Check all output lists for correct length
+    n = len(behav_df)
+    output_lists = [left, reward_amount, reward_number, starting_rsize, trial_number, epoch_number]
+    output_names = ['left', 'reward_amount', 'reward_number', 'starting_rsize', 'trial_number', 'epoch_number']
+    for name, lst in zip(output_names, output_lists):
+        if len(lst) != n:
+            print(f"[DEBUG] Length mismatch for {name}: {len(lst)} vs {n}. Filling with NaNs.")
+            lst[:] = [np.nan] * n
+    print(f"[DEBUG] Finished loop: left={len(left)}, behav_df['LeftAmount']={len(behav_df['LeftAmount'])}")
+    behav_df['reward_number'] = reward_number
+    behav_df['name'] = subj_name
+    behav_df['condition'] = condition
+    behav_df['session_number'] = session
+    behav_df['switch'] = left
+    behav_df['switch_prob'] = pd.Series(left).shift(-1)
+    behav_df['stay_prob'] = 1 - behav_df['switch_prob']
+    behav_df['trial_number'] = trial_number
+    behav_df['poke_number'] = epoch_number
+    behav_df['trial_type'] = starting_rsize
+    behav_df['reward_amount'] = np.around(np.array(reward_amount), decimals=4)
+    print(f"[DEBUG] Returning processed DataFrame for {subj_name} session {session} | shape: {behav_df.shape}, columns: {behav_df.columns.tolist()}")
+    return behav_df
+
+def filter_session(session_data):
+    """Filter 60% of the initial data based on session"""
+    threshold = int(0.6 * len(session_data))
+    return session_data.head(threshold)
+
+def load_animal_data(animal_id, base_path="/Volumes/ChemoBrain/ChemoBrain-Analysis/Data/Foraging_Cisplatin/Cis3_processed"):
+    """Load and process data for a single animal."""
+    animal_path = os.path.join(base_path, animal_id)
+    behav_files = glob.glob(os.path.join(animal_path, "*RecBehav.mat"))
+    photom_files = glob.glob(os.path.join(animal_path, "*AlignedPhoto.mat"))
+
+    # Sort files by datetime
+    dated_files = [(extract_datetime(fn), fn) for fn in behav_files]
+    dated_files.sort()
+    behav_files = [fn for dt, fn in dated_files]
+
+    dated_files_photo = [(extract_datetime(fn), fn) for fn in photom_files]
+    dated_files_photo.sort()
+    photom_files = [fn for dt, fn in dated_files_photo]
+
+    dfs = []
+    behav_only = []
+
+    for i, (behav_file, photom_file) in enumerate(zip(behav_files, photom_files)):
+        print(f"\nProcessing {animal_id}, session {i}:")
+        print(f"Behavior file: {behav_file}")
+        print(f"Photometry file: {photom_file}")
+
+        # Load behavior data
+        SessionData = loadmat(behav_file, squeeze_me=True)
+        print(f"SessionData keys: {SessionData.keys()}")
+
+        # Load photometry data
+        PhotometryData = loadmat(photom_file, squeeze_me=True)
+        print(f"PhotometryData keys: {PhotometryData.keys()}")
+
+        ra_traces = PhotometryData['aligned_photo']
+        print(f"ra_traces shape: {ra_traces.shape}")
+        print(f"ra_traces type: {type(ra_traces)}")
+
+        # Ensure ra_traces is 2D
+        if len(ra_traces.shape) == 1:
+            print("Warning: ra_traces is 1D, reshaping...")
+            ra_traces = ra_traces.reshape(1, -1)
+
+        n_trials, n_frames = ra_traces.shape
+        print(f"n_trials: {n_trials}, n_frames: {n_frames}")
+
+        # Handle both array and scalar cases for LeftAmount and RightAmount
+        if isinstance(SessionData['LeftAmount'], (int, float)):
+            left_amount = np.array([SessionData['LeftAmount']] * n_trials)
+            right_amount = np.array([SessionData['RightAmount']] * n_trials)
+        else:
+            left_amount = SessionData['LeftAmount']
+            right_amount = SessionData['RightAmount']
+
+        print(f"LeftAmount type: {type(left_amount)}, shape: {left_amount.shape if hasattr(left_amount, 'shape') else 'scalar'}")
+        print(f"RightAmount type: {type(right_amount)}, shape: {right_amount.shape if hasattr(right_amount, 'shape') else 'scalar'}")
+
+        # Ensure data alignment
+        assert n_trials == len(left_amount)
+
+        # Smooth photometry data
+        ra_traces = gaussian_filter1d(ra_traces, axis=1, sigma=1)
+
+        # Create behavior dataframe
+        behav_df = pd.DataFrame.from_dict({
+            'LeftAmount': left_amount,
+            'RightAmount': right_amount,
+            'name': [animal_id] * n_trials,
+            'session': [i] * n_trials
+        })
+
+        # Process behavior data
+        df = proc_foraging_df(behav_df.reset_index(), subj_name=animal_id,
+                             condition="Control", session=i)
+
+        # Store behavior-only data
+        behav_only.append(df)
+
+        # Create long-form dataframe for photometry data
+        behav_df_long = {key: np.repeat(df[key], n_frames) for key in df}
+        tr = ra_traces.reshape([-1])
+        behav_df_long['dopamine'] = tr
+        behav_df_long['frames'] = np.tile(np.linspace(-2, 3, n_frames), n_trials)
+
+        dfs.append(pd.DataFrame(behav_df_long))
+
+    return pd.concat(dfs), behav_only
+
+def plot_water_intake(behav_data, animal_ids=None):
+    """
+    Plot water intake over sessions for one or more animals.
+    - behav_data: list of DataFrames (single animal) or dict of {animal_id: list of DataFrames}
+    - animal_ids: list of animal IDs to plot (optional, only for dict input)
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import pandas as pd
+
+    plt.figure(figsize=(10, 6))
+
+    # If behav_data is a dict, plot all animals in the dict
+    if isinstance(behav_data, dict):
+        if animal_ids is None:
+            animal_ids = list(behav_data.keys())
+        for aid in animal_ids:
+            df_all = pd.concat(behav_data[aid], ignore_index=True)
+            water_ind = df_all.groupby('session')['reward_amount'].sum().reset_index()
+            sns.lineplot(data=water_ind, x='session', y='reward_amount', marker='o', label=aid)
+        plt.title('Water Intake Over Sessions')
+        plt.xlabel('Session')
+        plt.ylabel('Total Water Intake (uL)')
+        plt.tight_layout()
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
     else:
-        cohort_path = os.path.join(base_group_path, cohort)
-    
-    # Determine which animals to process
-    if isinstance(animal_id, str):
-        animal_ids = [animal_id]
-    elif isinstance(animal_id, tuple) and len(animal_id) == 2:
-        start_id, end_id = animal_id
-        # Extract numbers from IDs
-        start_num = int(''.join(filter(str.isdigit, start_id)))
-        end_num = int(''.join(filter(str.isdigit, end_id)))
-        animal_ids = [f"DA{num}" for num in range(start_num, end_num + 1)]
-    elif isinstance(animal_id, list):
-        animal_ids = animal_id
-    else:
-        raise ValueError("animal_id must be a string, tuple of two strings, or list of strings")
-    
-    # Dictionary to store all animal data
-    all_animal_data = {}
-    
-    # Process each animal
+        # Single animal
+        df_all = pd.concat(behav_data, ignore_index=True)
+        water_ind = df_all.groupby('session')['reward_amount'].sum().reset_index()
+        # Do not set label, and do not call plt.legend for single animal
+        sns.lineplot(data=water_ind, x='session', y='reward_amount', marker='o')
+        if isinstance(animal_ids, str):
+            plt.title(f'Water Intake Over Sessions for {animal_ids}')
+        else:
+            plt.title('Water Intake Over Sessions')
+        plt.xlabel('Session')
+        plt.ylabel('Total Water Intake (uL)')
+        plt.tight_layout()
+
+    plt.show()
+
+def plot_leaving_value(behav_only, animal_id):
+    """Plot leaving value over sessions for a single animal."""
+    df_all = pd.concat(behav_only)
+    df_all = df_all[['session', 'switch_prob', 'trial_type', 'trial_number', 'reward_amount']].reset_index(drop=True)
+    lev_sel = df_all.query("switch_prob==1").reset_index(drop=True)
+    lev_sel = lev_sel.groupby('session').apply(filter_session).reset_index(drop=True)
+    lev_lm = lev_sel.groupby('session')['reward_amount'].mean().reset_index()
+    lev_lm = lev_lm.rename(columns={'reward_amount': animal_id})
+
+    plt.figure(figsize=(10,6))
+    g = sns.lineplot(data=lev_lm, x='session', y=animal_id, marker='o')
+    plt.title(f'Leaving Value Over Sessions - {animal_id}')
+    plt.tight_layout()
+    plt.show()
+
+def plot_dopamine_response(df_tot, animal_id, session=7, poke_number=2):
+    """Plot dopamine response for a specific session and poke number."""
+    plt.figure(figsize=(10,6))
+    plot_df = df_tot.groupby('session').apply(filter_session).reset_index(drop=True)
+    if 'session' not in plot_df.columns:
+        plot_df = plot_df.reset_index()
+    g = sns.relplot(data=plot_df.query(f"session=={session} and poke_number=={poke_number}"),
+                    x="frames", y="dopamine", hue="poke_number", kind="line")
+    plt.title(f'Dopamine Response by Poke Number - {animal_id}')
+    plt.tight_layout()
+    plt.show()
+
+def plot_dopamine_heatmap(df_tot, animal_id, session=7):
+    """Plot dopamine heatmap for a specific session."""
+    ind_DA = df_tot[['session', 'trial_number', 'frames', 'dopamine']]
+    session_df = ind_DA[ind_DA['session'] == session]
+    pivoted_session_df = session_df.groupby(['trial_number', 'frames'])['dopamine'].mean().unstack('frames')
+
+    plt.figure()
+    g = sns.heatmap(pivoted_session_df, cbar=True, xticklabels=10, yticklabels=10, cmap='bwr')
+    g.set_xticklabels([])
+    x_zero_index = pivoted_session_df.columns.get_loc(0)
+    g.axvline(x=x_zero_index, color='red', linestyle='--', linewidth=2)
+    plt.title(f'Dopamine Heatmap by Trial - {animal_id}')
+    plt.tight_layout()
+    plt.show()
+
+def process_cohort(animal_ids, cohort, base_path, global_ns=None):
+    """
+    Process a cohort of animals, returning a dict mapping animal_id to (df_tot, behav_only).
+    If global_ns is provided (e.g., globals()), also creates variables in the caller's namespace:
+      - <animal_id>_behav for behav_only
+      - <animal_id>_df for df_tot
+    """
+    data_dict = {}
     for animal_id in animal_ids:
-        # Find the animal's directory (it might have different suffixes)
-        animal_dirs = glob.glob(os.path.join(cohort_path, f"{animal_id}-*"))
-        
-        if not animal_dirs:
-            print(f"Warning: No directory found for animal {animal_id}")
-            continue
-            
-        animal_dir = animal_dirs[0]  # Take the first matching directory
-        session_data_path = os.path.join(animal_dir, "Randelay_photo_singlevalue", "Session Data")
-        
-        if not os.path.exists(session_data_path):
-            print(f"Warning: Session data path not found for animal {animal_id}")
-            continue
-        
-        # Get all .mat files for this animal
-        mat_files = glob.glob(os.path.join(session_data_path, "*.mat"))
-        
-        if not mat_files:
-            print(f"Warning: No .mat files found for animal {animal_id}")
-            continue
-        
-        # Dictionary to store this animal's data
-        animal_data = {}
-        
-        # Load each session file
-        for mat_file in mat_files:
-            try:
-                session_data = load_mat_file(mat_file)
-                # Extract date from filename
-                date_str = os.path.basename(mat_file).split('_')[-2]  # Assuming format includes date
-                animal_data[date_str] = session_data
-            except Exception as e:
-                print(f"Error loading {mat_file}: {str(e)}")
-        
-        # Store in the global dictionary
-        var_name = f"{animal_id}"
-        global_vars[var_name] = animal_data
-        all_animal_data[animal_id] = animal_data
-        
-        print(f"Successfully imported data for {animal_id}")
-    
-    return all_animal_data 
+        print(f"\nProcessing animal: {animal_id}")
+        df_tot, behav_only = load_animal_data(animal_id, base_path=base_path)
+        data_dict[animal_id] = (df_tot, behav_only)
+        if global_ns is not None:
+            safe_id = animal_id.replace('-', '_')
+            global_ns[f'{safe_id}_behav'] = behav_only
+            global_ns[f'{safe_id}_df'] = df_tot
+    return data_dict
+
+def plot_water_intake_groups(groups, colors=None, title='Water Intake per Session by Group', plot_mode='average'):
+    """
+    Plot water intake per session for groups of animals.
+    Each group is a dict of {animal_id: list of DataFrames (per session)}.
+    colors: dict mapping group_name to hex color code.
+    plot_mode: 'average' (default) plots group mean ± SEM, 'individual' plots all animals as individual traces.
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import numpy as np
+    plt.figure(figsize=(12, 7))
+    for group_name, animal_dict in groups.items():
+        color = colors[group_name] if colors and group_name in colors else None
+        all_animals = []
+        first_animal = True
+        for animal_id, behav_list in animal_dict.items():
+            df_all = pd.concat(behav_list, ignore_index=True)
+            water_per_session = df_all.groupby('session')['reward_amount'].sum()
+            all_animals.append(water_per_session)
+            if plot_mode == 'individual':
+                # Plot each animal's trace, not faint. Only label the first animal for legend clarity.
+                if first_animal:
+                    plt.plot(water_per_session.index, water_per_session.values, color=color, alpha=1, linewidth=2, label=group_name)
+                    first_animal = False
+                else:
+                    plt.plot(water_per_session.index, water_per_session.values, color=color, alpha=1, linewidth=2, label=None)
+        if plot_mode == 'average':
+            # Compute group mean and SEM
+            group_df = pd.DataFrame(all_animals)
+            mean = group_df.mean(axis=0)
+            sem = group_df.sem(axis=0)
+            # Plot group mean ± SEM only
+            plt.plot(mean.index, mean.values, color=color, label=group_name, linewidth=3)
+            plt.fill_between(mean.index, mean - sem, mean + sem, color=color, alpha=0.2)
+    plt.xlabel('Session')
+    plt.ylabel('Total Water Intake (uL)')
+    plt.title(title)
+    plt.tight_layout()
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+    plt.show() 
