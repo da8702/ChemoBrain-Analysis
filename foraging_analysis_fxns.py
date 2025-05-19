@@ -355,12 +355,28 @@ def plot_leaving_value(behav_only, animal_id):
     df_all = df_all[['session', 'switch_prob', 'trial_type', 'trial_number', 'reward_amount']].reset_index(drop=True)
     lev_sel = df_all.query("switch_prob==1").reset_index(drop=True)
     lev_sel = lev_sel.groupby('session').apply(filter_session).reset_index(drop=True)
-    lev_lm = lev_sel.groupby('session')['reward_amount'].mean().reset_index()
-    lev_lm = lev_lm.rename(columns={'reward_amount': animal_id})
-
+    
+    # Calculate mean and SEM for each session
+    lev_stats = lev_sel.groupby('session').agg({
+        'reward_amount': ['mean', 'sem']
+    }).reset_index()
+    lev_stats.columns = ['session', 'mean', 'sem']
+    
     plt.figure(figsize=(10,6))
-    g = sns.lineplot(data=lev_lm, x='session', y=animal_id, marker='o')
+    # Plot the mean line
+    plt.plot(lev_stats['session'], lev_stats['mean'], 'o-', 
+             color='#1f77b4', label=animal_id, linewidth=2, markersize=8)
+    
+    # Add shaded error bars (SEM)
+    plt.fill_between(lev_stats['session'], 
+                     lev_stats['mean'] - lev_stats['sem'],
+                     lev_stats['mean'] + lev_stats['sem'],
+                     color='#1f77b4', alpha=0.2)
+    
     plt.title(f'Leaving Value Over Sessions - {animal_id}')
+    plt.xlabel('Session')
+    plt.ylabel('Leaving Value')
+    plt.legend()
     plt.tight_layout()
     plt.show()
 
@@ -427,7 +443,9 @@ def plot_water_intake_groups(groups, colors=None, title='Water Intake per Sessio
     import numpy as np
     import matplotlib.ticker as mticker
     plt.figure(figsize=(12, 7))
-    unique_dates_for_shading = None  # Will store unique dates for mapping
+    
+    all_dates = []  # Collect all dates across animals
+    
     for group_name, animal_dict in groups.items():
         color = colors[group_name] if colors and group_name in colors else None
         all_animals = []
@@ -469,10 +487,8 @@ def plot_water_intake_groups(groups, colors=None, title='Water Intake per Sessio
                         water_per_session['reward_amount'] = (water_per_session['reward_amount'] / baseline_value) * 100
                     else:
                         water_per_session['reward_amount'] = np.nan
-                unique_dates = list(water_per_session['date'])
-                date_to_idx = {date: idx for idx, date in enumerate(unique_dates)}
-                if unique_dates_for_shading is None:
-                    unique_dates_for_shading = unique_dates
+                all_dates.append(water_per_session['date'])  # Add to all_dates as a Series
+                date_to_idx = {date: idx for idx, date in enumerate(water_per_session['date'])}
                 water_per_session['x_idx'] = water_per_session['date'].map(date_to_idx)
                 all_animals.append(water_per_session.set_index('x_idx')['reward_amount'])
                 x_vals = water_per_session['x_idx']
@@ -500,12 +516,16 @@ def plot_water_intake_groups(groups, colors=None, title='Water Intake per Sessio
             sem = group_df.sem(axis=0)
             plt.plot(mean.index, mean.values, color=color, label=group_name, linewidth=3)
             plt.fill_between(mean.index, mean - sem, mean + sem, color=color, alpha=0.2)
+    
     ax = plt.gca()
     # --- SHADED REGIONS FOR DATE-BASED X-AXIS ---
-    if x_date_range is not None and date_range_shaded is not None and unique_dates_for_shading is not None:
+    if x_date_range is not None and date_range_shaded is not None and all_dates:
+        # Normalize all dates to just the date (no time)
+        all_dates_normalized = [d.dt.normalize() if hasattr(d, 'dt') else pd.to_datetime(d).normalize() for d in all_dates]
+        unique_dates_for_shading = pd.concat(all_dates_normalized).drop_duplicates().sort_values().tolist()
         for i, (shade_start, shade_end) in enumerate(date_range_shaded):
-            shade_start_dt = pd.to_datetime(shade_start)
-            shade_end_dt = pd.to_datetime(shade_end)
+            shade_start_dt = pd.to_datetime(shade_start).normalize()
+            shade_end_dt = pd.to_datetime(shade_end).normalize()
             idx_start = None
             idx_end = None
             for idx, dt in enumerate(unique_dates_for_shading):
@@ -514,7 +534,8 @@ def plot_water_intake_groups(groups, colors=None, title='Water Intake per Sessio
                 if dt <= shade_end_dt:
                     idx_end = idx
             if idx_start is not None and idx_end is not None:
-                ax.axvspan(idx_start, idx_end + 1, color='gray', alpha=0.2, label=shaded_label if i == 0 and shaded_label else None)
+                ax.axvspan(idx_start, idx_end, color='gray', alpha=0.2, label=shaded_label if i == 0 and shaded_label else None)
+    
     if x_date_range is not None:
         plt.xlabel('Session')
         if x_labels is not None:
@@ -529,6 +550,7 @@ def plot_water_intake_groups(groups, colors=None, title='Water Intake per Sessio
             ax.set_xticklabels(x_labels[::tick_interval])
         else:
             ax.set_xticks(ticks[::tick_interval])
+    
     plt.ylabel('Total Water Intake (% baseline)' if baseline is not None else 'Total Water Intake (uL)')
     plt.title(title)
     plt.tight_layout()
@@ -544,5 +566,182 @@ def plot_water_intake_groups(groups, colors=None, title='Water Intake per Sessio
                 max_x = np.max(x_data)
                 pad = (max_x - min_x) * 0.05
                 ax.set_xlim(left=min_x - pad)
+    
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+    plt.show()
+
+def plot_leaving_value_groups(
+    groups,
+    colors=None,
+    title='Leaving Value per Session by Group',
+    plot_mode='average',
+    x_date_range=None,
+    x_labels=None,
+    tick_interval=1,
+    date_range_shaded=None,
+    shaded_label=None,
+    baseline=None
+):
+    """
+    Plot leaving value per session for groups of animals.
+    Each group is a dict of {animal_id: list of DataFrames (per session)}.
+    colors: dict mapping group_name to hex color code.
+    plot_mode: 'average' (default) plots group mean ± SEM, 'individual' plots all animals as individual traces with SEM bands.
+    x_date_range: tuple of (start_date, end_date) as strings (MM/DD/YY or similar, must match extract_datetime output)
+    x_labels: list of strings for x-axis labels (should match number of sessions after filtering)
+    tick_interval: integer, show every Nth tick label
+    date_range_shaded: list of (start_date, end_date) tuples to shade on the plot (date-based x-axis only)
+    shaded_label: label for the shaded region(s)
+    baseline: str or tuple, date or date range to use as baseline for normalization (leaving value will be shown as % baseline)
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import numpy as np
+    import matplotlib.ticker as mticker
+
+    plt.figure(figsize=(12, 7))
+    ax = plt.gca()
+    unique_dates_for_shading = None
+
+    all_x_vals = []
+    all_y_vals = []
+
+    for group_name, animal_dict in groups.items():
+        group_color = colors[group_name] if colors and group_name in colors else None
+        all_animals = []
+        all_dates = []
+        first_animal = True  # Track first animal for legend
+        for animal_id, behav_list in animal_dict.items():
+            df_all = pd.concat(behav_list, ignore_index=True)
+            if 'date' in df_all.columns:
+                if not np.issubdtype(df_all['date'].dtype, np.datetime64):
+                    df_all['date'] = pd.to_datetime(df_all['date'])
+                df_all['date_norm'] = df_all['date'].dt.normalize()
+            else:
+                df_all['date_norm'] = pd.NaT
+            if x_date_range is not None:
+                start = pd.to_datetime(x_date_range[0]).normalize()
+                end = pd.to_datetime(x_date_range[1]).normalize()
+                mask = (df_all['date_norm'] >= start) & (df_all['date_norm'] <= end)
+                df_all = df_all[mask]
+            lev_sel = df_all[['session', 'date_norm', 'switch_prob', 'reward_amount']].copy()
+            lev_sel = lev_sel.query("switch_prob==1").reset_index(drop=True)
+            lev_sel = lev_sel.groupby('session').apply(filter_session).reset_index(drop=True)
+            if x_date_range is not None:
+                groupby_col = 'date_norm'
+            else:
+                groupby_col = 'session'
+            lev_stats = lev_sel.groupby(groupby_col)['reward_amount'].agg(['mean', 'sem']).reset_index()
+            if x_date_range is not None:
+                unique_dates = lev_stats[groupby_col].dropna().sort_values().unique()
+                date_to_idx = {date: idx for idx, date in enumerate(unique_dates)}
+                lev_stats['x_idx'] = lev_stats[groupby_col].map(date_to_idx)
+                x_vals = lev_stats['x_idx']
+                all_dates.append(lev_stats[groupby_col])
+            else:
+                x_vals = lev_stats[groupby_col]
+            y_vals = lev_stats['mean']
+            yerr = lev_stats['sem']
+            baseline_value = None
+            if baseline is not None:
+                if groupby_col == 'date_norm':
+                    if isinstance(baseline, str):
+                        baseline_dates = [pd.to_datetime(baseline).normalize()]
+                    elif isinstance(baseline, (tuple, list)) and len(baseline) == 2:
+                        start_b = pd.to_datetime(baseline[0]).normalize()
+                        end_b = pd.to_datetime(baseline[1]).normalize()
+                        baseline_dates = pd.date_range(start_b, end_b, freq='D').normalize()
+                    else:
+                        baseline_dates = []
+                    baseline_mask = lev_stats[groupby_col].isin(baseline_dates)
+                    baseline_df = lev_stats[baseline_mask]
+                    baseline_value = baseline_df['mean'].mean() if not baseline_df.empty else None
+                else:
+                    if isinstance(baseline, (int, float, str)):
+                        baseline_sessions = [int(baseline)]
+                    elif isinstance(baseline, (tuple, list)) and len(baseline) == 2:
+                        baseline_sessions = list(range(int(baseline[0]), int(baseline[1])+1))
+                    else:
+                        baseline_sessions = []
+                    baseline_mask = lev_stats[groupby_col].isin(baseline_sessions)
+                    baseline_df = lev_stats[baseline_mask]
+                    baseline_value = baseline_df['mean'].mean() if not baseline_df.empty else None
+                if baseline_value is not None and baseline_value != 0:
+                    y_vals = (y_vals / baseline_value) * 100
+                    yerr = (yerr / baseline_value) * 100
+                else:
+                    y_vals = np.nan * y_vals
+                    yerr = np.nan * yerr
+            all_animals.append(pd.Series(y_vals.values, index=x_vals))
+            # Individual mode: plot each animal's trace with SEM band, only first animal gets group label
+            if plot_mode == 'individual':
+                if first_animal:
+                    plt.plot(x_vals, y_vals, alpha=1.0, linewidth=2, label=group_name, color=group_color)
+                    plt.fill_between(x_vals, y_vals - yerr, y_vals + yerr, alpha=0.2, color=group_color)
+                    first_animal = False
+                else:
+                    plt.plot(x_vals, y_vals, alpha=1.0, linewidth=2, label=None, color=group_color)
+                    plt.fill_between(x_vals, y_vals - yerr, y_vals + yerr, alpha=0.2, color=group_color)
+                all_x_vals.extend(x_vals)
+                all_y_vals.extend((y_vals - yerr).tolist())
+                all_y_vals.extend((y_vals + yerr).tolist())
+        # Average mode: plot group mean ± SEM as shaded error band
+        if plot_mode == 'average' and all_animals:
+            group_df = pd.DataFrame(all_animals)
+            group_df = group_df.T
+            mean = group_df.mean(axis=1)
+            sem = group_df.sem(axis=1)
+            x_vals = group_df.index
+            plt.plot(x_vals, mean.values, color=group_color, label=group_name, linewidth=3)
+            plt.fill_between(x_vals, mean - sem, mean + sem, color=group_color, alpha=0.2)
+            all_x_vals.extend(x_vals)
+            all_y_vals.extend((mean - sem).tolist())
+            all_y_vals.extend((mean + sem).tolist())
+    if x_date_range is not None and date_range_shaded is not None and all_dates:
+        unique_dates_for_shading = pd.concat(all_dates).drop_duplicates().sort_values().tolist()
+        for i, (shade_start, shade_end) in enumerate(date_range_shaded):
+            shade_start_dt = pd.to_datetime(shade_start)
+            shade_end_dt = pd.to_datetime(shade_end)
+            idx_start = None
+            idx_end = None
+            for idx, dt in enumerate(unique_dates_for_shading):
+                if idx_start is None and dt >= shade_start_dt:
+                    idx_start = idx
+                if dt <= shade_end_dt:
+                    idx_end = idx
+            if idx_start is not None and idx_end is not None:
+                ax.axvspan(idx_start, idx_end, color='gray', alpha=0.2, label=shaded_label if i == 0 and shaded_label else None)
+    if x_date_range is not None:
+        plt.xlabel('Session')
+        if x_labels is not None:
+            n_ticks = len(x_labels)
+            ticks = list(range(0, n_ticks, tick_interval))
+            ax.set_xticks(ticks)
+            ax.set_xticklabels([x_labels[i] for i in ticks])
+    else:
+        plt.xlabel('Session')
+        ticks = ax.get_xticks()
+        if x_labels is not None and len(x_labels) == len(ticks):
+            ax.set_xticklabels(x_labels[::tick_interval])
+        else:
+            ax.set_xticks(ticks[::tick_interval])
+    plt.ylabel('Leaving Value (% baseline)' if baseline is not None else 'Leaving Value')
+    plt.title(title)
+    if all_x_vals:
+        x_vals_arr = pd.Series(all_x_vals)
+        if np.issubdtype(x_vals_arr.dtype, np.datetime64):
+            pass
+        else:
+            min_x = np.nanmin(x_vals_arr)
+            max_x = np.nanmax(x_vals_arr)
+            pad_x = max((max_x - min_x) * 0.05, 0.5)
+            ax.set_xlim(left=min_x - pad_x, right=max_x + pad_x)
+    if all_y_vals:
+        y_vals_arr = np.array(all_y_vals, dtype=float)
+        min_y = np.nanmin(y_vals_arr)
+        max_y = np.nanmax(y_vals_arr)
+        pad_y = max((max_y - min_y) * 0.05, 0.5)
+        ax.set_ylim(bottom=min_y - pad_y, top=max_y + pad_y)
+    plt.tight_layout()
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
     plt.show() 
