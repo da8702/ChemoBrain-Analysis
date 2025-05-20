@@ -380,15 +380,51 @@ def plot_leaving_value(behav_only, animal_id):
     plt.tight_layout()
     plt.show()
 
-def plot_dopamine_response(df_tot, animal_id, session=7, poke_number=2):
-    """Plot dopamine response for a specific session and poke number."""
+def plot_dopamine_response(df_tot, animal_id, session=7, poke_number=2, date=None, title=None):
+    """Plot dopamine response for a specific session and poke number, or by date/date range if provided. Optionally set a custom title."""
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import pandas as pd
     plt.figure(figsize=(10,6))
     plot_df = df_tot.groupby('session').apply(filter_session).reset_index(drop=True)
     if 'session' not in plot_df.columns:
         plot_df = plot_df.reset_index()
-    g = sns.relplot(data=plot_df.query(f"session=={session} and poke_number=={poke_number}"),
-                    x="frames", y="dopamine", hue="poke_number", kind="line")
-    plt.title(f'Dopamine Response by Poke Number - {animal_id}')
+    # If date is provided, map to session or date range
+    if date is not None:
+        if isinstance(date, (tuple, list)) and len(date) == 2:
+            # Date range
+            start_dt = pd.to_datetime(date[0]).normalize()
+            end_dt = pd.to_datetime(date[1]).normalize()
+            if 'date' in plot_df.columns:
+                plot_df['date_norm'] = pd.to_datetime(plot_df['date']).dt.normalize()
+                date_mask = (plot_df['date_norm'] >= start_dt) & (plot_df['date_norm'] <= end_dt)
+                plot_df = plot_df[date_mask & (plot_df['poke_number'] == poke_number)]
+            else:
+                raise ValueError("No 'date' column found in input DataFrame.")
+        else:
+            # Single date
+            date_dt = pd.to_datetime(date).normalize()
+            if 'date' in plot_df.columns:
+                plot_df['date_norm'] = pd.to_datetime(plot_df['date']).dt.normalize()
+                session_matches = plot_df[plot_df['date_norm'] == date_dt]['session'].unique()
+                if len(session_matches) == 0:
+                    raise ValueError(f"No session found for date {date}")
+                session = session_matches[0]  # Use the first matching session
+            else:
+                raise ValueError("No 'date' column found in input DataFrame.")
+            plot_df = plot_df.query(f"session=={session} and poke_number=={poke_number}")
+    else:
+        plot_df = plot_df.query(f"session=={session} and poke_number=={poke_number}")
+    # Plot mean ± SEM using seaborn lineplot
+    import numpy as np
+    if len(plot_df) == 0:
+        raise ValueError("No data found for the specified session/date and poke_number.")
+    g = sns.lineplot(data=plot_df, x="frames", y="dopamine", errorbar="se", estimator=np.mean, color="#1f77b4")
+    if title is None:
+        plt.title(f'Dopamine Response by Poke Number - {animal_id}')
+    else:
+        plt.title(title)
+    plt.xlabel('Time from Reward (s)')
     plt.tight_layout()
     plt.show()
 
@@ -744,4 +780,85 @@ def plot_leaving_value_groups(
         ax.set_ylim(bottom=min_y - pad_y, top=max_y + pad_y)
     plt.tight_layout()
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+    plt.show()
+
+def plot_dopamine_response_groups(groups, colors=None, poke_number=2, title=None):
+    """
+    Plot mean ± SEM dopamine response for groups of animals, optionally over a date or date range for each animal.
+    groups: dict mapping group name to dict of {animal_name: (DataFrame, date/date_range/None) or DataFrame}
+    colors: dict mapping group name to color
+    poke_number: which poke number to average (default: 2)
+    title: optional custom plot title
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import seaborn as sns
+    plt.figure(figsize=(10,6))
+    group_means = {}
+    group_sems = {}
+    frames_axis = None
+    for group_name, animal_dict in groups.items():
+        color = colors[group_name] if colors and group_name in colors else None
+        all_traces = []
+        for animal_name, animal_val in animal_dict.items():
+            # Accept (df, date) or just df
+            if isinstance(animal_val, tuple):
+                df, date = animal_val
+            else:
+                df = animal_val
+                date = None
+            plot_df = df.groupby('session').apply(filter_session).reset_index(drop=True)
+            if 'session' not in plot_df.columns:
+                plot_df = plot_df.reset_index()
+            # Date filtering
+            if date is not None:
+                if isinstance(date, (tuple, list)) and len(date) == 2:
+                    start_dt = pd.to_datetime(date[0]).normalize()
+                    end_dt = pd.to_datetime(date[1]).normalize()
+                    if 'date' in plot_df.columns:
+                        plot_df['date_norm'] = pd.to_datetime(plot_df['date']).dt.normalize()
+                        date_mask = (plot_df['date_norm'] >= start_dt) & (plot_df['date_norm'] <= end_dt)
+                        plot_df = plot_df[date_mask & (plot_df['poke_number'] == poke_number)]
+                    else:
+                        raise ValueError("No 'date' column found in input DataFrame.")
+                else:
+                    date_dt = pd.to_datetime(date).normalize()
+                    if 'date' in plot_df.columns:
+                        plot_df['date_norm'] = pd.to_datetime(plot_df['date']).dt.normalize()
+                        session_matches = plot_df[plot_df['date_norm'] == date_dt]['session'].unique()
+                        if len(session_matches) == 0:
+                            continue
+                        session = session_matches[0]
+                    else:
+                        raise ValueError("No 'date' column found in input DataFrame.")
+                    plot_df = plot_df.query(f"session=={session} and poke_number=={poke_number}")
+            else:
+                plot_df = plot_df.query(f"poke_number=={poke_number}")
+            # For each trial, get the dopamine trace (frames, dopamine)
+            if len(plot_df) == 0:
+                continue
+            # Group by trial (trial_number) and frames, then average across trials
+            trial_group = plot_df.groupby(['trial_number', 'frames'])['dopamine'].mean().unstack('frames')
+            all_traces.append(trial_group.values)
+            if frames_axis is None:
+                frames_axis = trial_group.columns.values
+        # Stack all animal traces for this group
+        if len(all_traces) == 0:
+            continue
+        all_traces = np.vstack(all_traces)  # shape: (n_trials_total, n_frames)
+        mean_trace = np.nanmean(all_traces, axis=0)
+        sem_trace = np.nanstd(all_traces, axis=0) / np.sqrt(all_traces.shape[0])
+        group_means[group_name] = mean_trace
+        group_sems[group_name] = sem_trace
+        plt.plot(frames_axis, mean_trace, color=color, label=group_name, linewidth=3)
+        plt.fill_between(frames_axis, mean_trace - sem_trace, mean_trace + sem_trace, color=color, alpha=0.2)
+    if title is None:
+        plt.title('Dopamine Response by Poke Number - Groups')
+    else:
+        plt.title(title)
+    plt.xlabel('Time from Reward (s)')
+    plt.ylabel('Dopamine')
+    plt.legend()
+    plt.tight_layout()
     plt.show() 
