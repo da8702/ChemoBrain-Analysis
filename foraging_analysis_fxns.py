@@ -861,4 +861,77 @@ def plot_dopamine_response_groups(groups, colors=None, poke_number=2, title=None
     plt.ylabel('Dopamine')
     plt.legend()
     plt.tight_layout()
+    plt.show()
+
+def plot_dopamine_peak(df_tot, animal_id, poke_number=2, date=None, x_labels=None, title=None):
+    """
+    Plot the mean ± SEM of the peak dopamine value for a given poke_number across a date range.
+    x-axis: session (or date), y-axis: mean peak dopamine for that session.
+    Parameters:
+        df_tot: DataFrame with dopamine data
+        animal_id: str, for labeling
+        poke_number: int, which poke number to analyze (default: 2)
+        date: tuple/list of two strings (start, end) for date range, or single date string
+        x_labels: list of strings for x-axis labels (optional)
+        title: custom plot title (optional)
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    # Filter and normalize dates
+    plot_df = df_tot.groupby('session').apply(filter_session).reset_index(drop=True)
+    if 'session' not in plot_df.columns:
+        plot_df = plot_df.reset_index()
+    if date is not None:
+        if isinstance(date, (tuple, list)) and len(date) == 2:
+            start_dt = pd.to_datetime(date[0]).normalize()
+            end_dt = pd.to_datetime(date[1]).normalize()
+            if 'date' in plot_df.columns:
+                plot_df['date_norm'] = pd.to_datetime(plot_df['date']).dt.normalize()
+                date_mask = (plot_df['date_norm'] >= start_dt) & (plot_df['date_norm'] <= end_dt)
+                plot_df = plot_df[date_mask & (plot_df['poke_number'] == poke_number)]
+            else:
+                raise ValueError("No 'date' column found in input DataFrame.")
+        else:
+            date_dt = pd.to_datetime(date).normalize()
+            if 'date' in plot_df.columns:
+                plot_df['date_norm'] = pd.to_datetime(plot_df['date']).dt.normalize()
+                session_matches = plot_df[plot_df['date_norm'] == date_dt]['session'].unique()
+                if len(session_matches) == 0:
+                    raise ValueError(f"No session found for date {date}")
+                session = session_matches[0]
+            else:
+                raise ValueError("No 'date' column found in input DataFrame.")
+            plot_df = plot_df.query(f"session=={session} and poke_number=={poke_number}")
+    else:
+        plot_df = plot_df.query(f"poke_number=={poke_number}")
+    # For each session/date, compute mean and SEM of peak dopamine
+    if 'date_norm' in plot_df.columns:
+        group_col = 'date_norm'
+    elif 'date' in plot_df.columns:
+        group_col = 'date'
+    else:
+        group_col = 'session'
+    peak_stats = plot_df.groupby([group_col, 'trial_number']).apply(lambda x: x['dopamine'].max()).reset_index()
+    # Now group by session/date and compute mean and SEM
+    peak_summary = peak_stats.groupby(group_col)[0].agg(['mean', 'sem']).reset_index()
+    # X-axis: session index or date
+    x_vals = np.arange(len(peak_summary))
+    y_mean = peak_summary['mean']
+    y_sem = peak_summary['sem']
+    plt.figure(figsize=(10,6))
+    plt.errorbar(x_vals, y_mean, yerr=y_sem, fmt='o-', color='#1f77b4', linewidth=2, markersize=8, capsize=4)
+    if x_labels is not None and len(x_labels) == len(x_vals):
+        plt.xticks(x_vals, x_labels)
+        plt.xlabel('Session')
+    else:
+        # Use date/session as x-tick labels
+        plt.xticks(x_vals, [str(val)[:10] for val in peak_summary[group_col]])
+        plt.xlabel('Session/Date')
+    plt.ylabel('Peak Dopamine')
+    if title is None:
+        plt.title(f'Peak Dopamine by Session - {animal_id}')
+    else:
+        plt.title(title)
+    plt.tight_layout()
     plt.show() 

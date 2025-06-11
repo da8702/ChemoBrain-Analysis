@@ -1200,9 +1200,9 @@ def group_pellet_averaged(
     plt.tight_layout()
     plt.show()
 
-def group_breakpoint_percentile_plot(
+def group_breakpoint_plot(
     groups,
-    percentile=50,
+    percentile=None,
     time_col='MM:DD:YYYY hh:mm:ss',
     fr_col='FR',
     bin_size='1D',
@@ -1224,7 +1224,55 @@ def group_breakpoint_percentile_plot(
     plot_xlabel='Day',
     plot_ylabel=None
 ):
-    """Plot per-day percentile breakpoint for each animal, baseline-normalize, then average across groups."""
+    """
+    Plot per-day breakpoint statistic (max or percentile) for each animal, baseline-normalize, then average across groups.
+
+    Parameters:
+    -----------
+    groups : dict
+        Dictionary mapping group labels to lists of DataFrames
+    percentile : int or None, optional
+        If int, compute this percentile of breakpoints per bin. If None, use the max breakpoint per bin. (default: None)
+    time_col : str, optional
+        Name of the time column (default: 'MM:DD:YYYY hh:mm:ss')
+    fr_col : str, optional
+        Name of the FR column (default: 'FR')
+    bin_size : str, optional
+        Time interval for binning data (default: '1D')
+    baseline : str or list, optional
+        Baseline date(s) for normalization (default: None)
+    show_sem : str, optional
+        How to display standard error of the mean ('shaded', 'error_bars', or None) (default: 'shaded')
+    group_colors : dict, optional
+        Dictionary mapping group labels to colors (default: None)
+    x_date_range : list, optional
+        List of [start_date, end_date] for x-axis limits (default: None)
+    x_labels : list, optional
+        List of labels for x-axis ticks (default: None)
+    tick_interval : int, optional
+        Interval for x-axis tick labels (default: 1)
+    dashed_line_date1, dashed_line_date2 : str or list, optional
+        Date(s) for vertical dashed lines (default: None)
+    dashed_line_label1, dashed_line_label2 : str, optional
+        Label(s) for vertical dashed lines (default: None)
+    date_range_shaded : list, optional
+        List of [start_date, end_date] pairs for shaded regions (default: None)
+    shaded_label : str, optional
+        Label for shaded regions (default: None)
+    y_scale : str or float, optional
+        Y-axis scale type ('linear', 'log') or maximum value (default: 'linear')
+    y_max : float, optional
+        Maximum value for y-axis (default: None)
+    plot_title : str, optional
+        Title for the plot (default: None)
+    plot_xlabel : str, optional
+        Label for x-axis (default: 'Day')
+    plot_ylabel : str, optional
+        Label for y-axis (default: None)
+    """
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
     plt.figure(figsize=(10, 6))
     group_stats = {}
 
@@ -1261,10 +1309,13 @@ def group_breakpoint_percentile_plot(
 
             bp_df = pd.DataFrame({'breakpoint': vals}, index=pd.to_datetime(times))
 
-            # Compute daily percentile
-            def calc_pct(x):
-                return np.nan if len(x) == 0 else np.percentile(x, percentile)
-            daily_pct = bp_df['breakpoint'].resample(bin_size).apply(calc_pct)
+            # Compute daily statistic: max or percentile
+            if percentile is None:
+                daily_stat = bp_df['breakpoint'].resample(bin_size).max()
+            else:
+                def calc_pct(x):
+                    return np.nan if len(x) == 0 else np.percentile(x, percentile)
+                daily_stat = bp_df['breakpoint'].resample(bin_size).apply(calc_pct)
 
             # Baseline normalization per animal
             if baseline:
@@ -1277,14 +1328,14 @@ def group_breakpoint_percentile_plot(
                         [baseline], format='%m/%d/%y', errors='coerce'
                     )
                 baseline_dates = baseline_dates.dropna()
-                bp_dates = pd.Index(daily_pct.index.date)
-                base_vals = daily_pct[bp_dates.isin(baseline_dates.date)]
+                bp_dates = pd.Index(daily_stat.index.date)
+                base_vals = daily_stat[bp_dates.isin(baseline_dates.date)]
                 if not base_vals.empty:
                     base_mean = base_vals.mean()
                     if base_mean > 0:
-                        daily_pct = (daily_pct / base_mean) * 100
+                        daily_stat = (daily_stat / base_mean) * 100
 
-            individual_series.append(daily_pct)
+            individual_series.append(daily_stat)
 
         if not individual_series:
             continue
@@ -1347,11 +1398,17 @@ def group_breakpoint_percentile_plot(
 
     # Labels and title
     if plot_title is None:
-        plot_title = f"{percentile}th Percentile Breakpoint per {bin_size}"
+        if percentile is None:
+            plot_title = f"Max Breakpoint per {bin_size}"
+        else:
+            plot_title = f"{percentile}th Percentile Breakpoint per {bin_size}"
     plt.title(plot_title)
     plt.xlabel(plot_xlabel)
     if plot_ylabel is None:
-        plot_ylabel = f"{percentile}th Percentile Breakpoint"
+        if percentile is None:
+            plot_ylabel = "Max Breakpoint"
+        else:
+            plot_ylabel = f"{percentile}th Percentile Breakpoint"
     plt.ylabel(plot_ylabel)
     plt.legend(loc='best')
     plt.tight_layout()
@@ -2108,7 +2165,7 @@ def histogram_breakpoint_plot_manim(
     ).render()
 
 # alias backward compatibility
-group_breakpoint_plot = group_breakpoint_percentile_plot  # remove stray '%'
+group_breakpoint_plot = group_breakpoint_plot
 
 # simple histogram of breakpoints by date group
 def histogram_breakpoint_plot_simple(
