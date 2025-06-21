@@ -847,6 +847,7 @@ def group_poke_averaged(
     """
     plt.figure(figsize=(10, 6))
     all_binned_data = {}
+    baseline_used = False  # Track if baseline normalization is applied
 
     # Update y-axis label if plot_mode is 'individual'
     if plot_mode == 'individual':
@@ -873,6 +874,7 @@ def group_poke_averaged(
 
                 # --- Baseline normalization ---
                 if baseline:
+                    baseline_used = True
                     if isinstance(baseline, (list, tuple)):
                         baseline_dates = pd.to_datetime(list(baseline), format='%m/%d/%y', errors='coerce')
                     else:
@@ -890,7 +892,6 @@ def group_poke_averaged(
                             baseline_value = np.nan
                     if pd.notnull(baseline_value) and baseline_value > 0:
                         binned_diff = (binned_diff / baseline_value) * 100
-                        plot_ylabel = 'Pokes (% baseline)'
 
                 # --- Plot individual data or accumulate for averaging ---
                 if plot_mode == 'individual':
@@ -971,6 +972,15 @@ def group_poke_averaged(
         plt.ylim(0, y_max)
 
     # --- Final labeling and legend ---
+    # Always append (% baseline) if baseline was used
+    if baseline_used:
+        if plot_ylabel is None:
+            if plot_mode == 'individual':
+                plot_ylabel = 'Pokes (% baseline)'
+            else:
+                plot_ylabel = 'Average Pokes (% baseline)'
+        elif '(% baseline)' not in plot_ylabel:
+            plot_ylabel = plot_ylabel.strip() + ' (% baseline)'
     plt.title(plot_title.format(bin_size=bin_size))
     plt.xlabel(plot_xlabel)
     plt.ylabel(plot_ylabel)
@@ -1054,6 +1064,7 @@ def group_pellet_averaged(
     """
     plt.figure(figsize=(10, 6))
     all_binned_data = {}
+    baseline_used = False  # Track if baseline normalization is applied
 
     # Update y-axis label based on plot_mode
     if plot_mode == 'individual':
@@ -1088,6 +1099,7 @@ def group_pellet_averaged(
 
                 # --- Baseline normalization ---
                 if baseline:
+                    baseline_used = True
                     # If baseline is a list/tuple, convert each element; else, wrap in list.
                     if isinstance(baseline, (list, tuple)):
                         baseline_dates = pd.to_datetime(list(baseline), format='%m/%d/%y', errors='coerce')
@@ -1193,6 +1205,15 @@ def group_pellet_averaged(
         plt.ylim(0, y_max)
 
     # --- Final labeling and legend ---
+    # Always append (% baseline) if baseline was used
+    if baseline_used:
+        if plot_ylabel is None:
+            if plot_mode == 'individual':
+                plot_ylabel = 'Pellets (% baseline)'
+            else:
+                plot_ylabel = 'Average Pellets (% baseline)'
+        elif '(% baseline)' not in plot_ylabel:
+            plot_ylabel = plot_ylabel.strip() + ' (% baseline)'
     plt.title(plot_title.format(bin_size=bin_size))
     plt.xlabel(plot_xlabel)
     plt.ylabel(plot_ylabel)
@@ -1275,6 +1296,7 @@ def group_breakpoint_plot(
     import matplotlib.pyplot as plt
     plt.figure(figsize=(10, 6))
     group_stats = {}
+    baseline_used = False  # Track if baseline normalization is applied
 
     for group_label, dfs in groups.items():
         color = (
@@ -1319,6 +1341,7 @@ def group_breakpoint_plot(
 
             # Baseline normalization per animal
             if baseline:
+                baseline_used = True
                 if isinstance(baseline, (list, tuple)):
                     baseline_dates = pd.to_datetime(
                         list(baseline), format='%m/%d/%y', errors='coerce'
@@ -1404,11 +1427,21 @@ def group_breakpoint_plot(
             plot_title = f"{percentile}th Percentile Breakpoint per {bin_size}"
     plt.title(plot_title)
     plt.xlabel(plot_xlabel)
+    # Always append (% baseline) if baseline was used
+    if baseline_used:
     if plot_ylabel is None:
         if percentile is None:
-            plot_ylabel = "Max Breakpoint"
+                plot_ylabel = 'Max Breakpoint (% baseline)'
         else:
-            plot_ylabel = f"{percentile}th Percentile Breakpoint"
+                plot_ylabel = f'{percentile}th Percentile Breakpoint (% baseline)'
+        elif '(% baseline)' not in plot_ylabel:
+            plot_ylabel = plot_ylabel.strip() + ' (% baseline)'
+    else:
+        if plot_ylabel is None:
+            if percentile is None:
+                plot_ylabel = 'Max Breakpoint'
+            else:
+                plot_ylabel = f'{percentile}th Percentile Breakpoint'
     plt.ylabel(plot_ylabel)
     plt.legend(loc='best')
     plt.tight_layout()
