@@ -1427,12 +1427,13 @@ def group_breakpoint_plot(
             plot_title = f"{percentile}th Percentile Breakpoint per {bin_size}"
     plt.title(plot_title)
     plt.xlabel(plot_xlabel)
+
     # Always append (% baseline) if baseline was used
     if baseline_used:
-    if plot_ylabel is None:
-        if percentile is None:
+        if plot_ylabel is None:
+            if percentile is None:
                 plot_ylabel = 'Max Breakpoint (% baseline)'
-        else:
+            else:
                 plot_ylabel = f'{percentile}th Percentile Breakpoint (% baseline)'
         elif '(% baseline)' not in plot_ylabel:
             plot_ylabel = plot_ylabel.strip() + ' (% baseline)'
