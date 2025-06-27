@@ -428,18 +428,74 @@ def plot_dopamine_response(df_tot, animal_id, session=7, poke_number=2, date=Non
     plt.tight_layout()
     plt.show()
 
-def plot_dopamine_heatmap(df_tot, animal_id, session=7):
-    """Plot dopamine heatmap for a specific session."""
+def plot_dopamine_heatmap(df_tot, animal_id, session=7, session_date=None):
+    """
+    Plot dopamine heatmap for a specific session or session date.
+    Args:
+        df_tot: DataFrame with dopamine data (long-form)
+        animal_id: str, for labeling
+        session: int, session number (default: 7)
+        session_date: str or datetime, date to select session (takes precedence if provided)
+            Accepts flexible formats like '6/4/24', '06/04/2024', '2024-06-04', etc.
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import pandas as pd
+    # If session_date is provided, find the corresponding session number
+    if session_date is not None:
+        # Robustly parse and normalize the input date and DataFrame's date column
+        # This allows for flexible input like '6/4/24', '06/04/2024', '2024-06-04', etc.
+        if not pd.api.types.is_datetime64_any_dtype(df_tot['date']):
+            df_tot['date'] = pd.to_datetime(df_tot['date'], errors='coerce')
+        # Normalize all dates to just the date (no time)
+        df_tot['date_norm'] = pd.to_datetime(df_tot['date'], errors='coerce').dt.normalize()
+        # Parse and normalize the input session_date
+        try:
+            date_norm = pd.to_datetime(session_date, errors='raise').normalize()
+        except Exception as e:
+            raise ValueError(f"Could not parse session_date '{session_date}': {e}")
+        session_matches = df_tot[df_tot['date_norm'] == date_norm]['session'].unique()
+        if len(session_matches) == 0:
+            raise ValueError(f"No session found for date {session_date} (parsed as {date_norm.date()})")
+        session = session_matches[0]  # Use the first matching session
     ind_DA = df_tot[['session', 'trial_number', 'frames', 'dopamine']]
     session_df = ind_DA[ind_DA['session'] == session]
+    if session_df.empty:
+        raise ValueError(f"No data found for session {session} (date: {session_date})")
     pivoted_session_df = session_df.groupby(['trial_number', 'frames'])['dopamine'].mean().unstack('frames')
 
     plt.figure()
-    g = sns.heatmap(pivoted_session_df, cbar=True, xticklabels=10, yticklabels=10, cmap='bwr')
-    g.set_xticklabels([])
-    x_zero_index = pivoted_session_df.columns.get_loc(0)
-    g.axvline(x=x_zero_index, color='red', linestyle='--', linewidth=2)
-    plt.title(f'Dopamine Heatmap by Trial - {animal_id}')
+    g = sns.heatmap(pivoted_session_df, cbar=True, xticklabels=False, yticklabels=10, cmap='bwr')
+    
+    # Set up proper x-axis with time labels
+    n_frames = len(pivoted_session_df.columns)
+    time_points = np.linspace(-2, 3, n_frames)
+    
+    # Find indices for the desired time points (-2, -1, 0, 1, 2)
+    target_times = [-2, -1, 0, 1, 2]
+    tick_indices = []
+    tick_labels = []
+    
+    for target_time in target_times:
+        # Find the closest frame index to the target time
+        closest_idx = np.argmin(np.abs(time_points - target_time))
+        tick_indices.append(closest_idx)
+        tick_labels.append(str(target_time))
+    
+    # Set x-axis ticks and labels
+    g.set_xticks(tick_indices)
+    g.set_xticklabels(tick_labels)
+    g.set_xlabel('Time from Reward (s)')
+    
+    # Add vertical line at reward time (t=0)
+    zero_idx = tick_indices[tick_labels.index('0')]
+    g.axvline(x=zero_idx, color='red', linestyle='--', linewidth=2)
+    
+    if session_date is not None:
+        title_str = f"Dopamine Heatmap - {animal_id} - {str(date_norm.date())}"
+    else:
+        title_str = f"Dopamine Heatmap by Trial - {animal_id} (Session {session})"
+    plt.title(title_str)
     plt.tight_layout()
     plt.show()
 
@@ -730,9 +786,6 @@ def plot_leaving_value_groups(
             x_vals = group_df.index
             plt.plot(x_vals, mean.values, color=group_color, label=group_name, linewidth=3)
             plt.fill_between(x_vals, mean - sem, mean + sem, color=group_color, alpha=0.2)
-            all_x_vals.extend(x_vals)
-            all_y_vals.extend((mean - sem).tolist())
-            all_y_vals.extend((mean + sem).tolist())
     if x_date_range is not None and date_range_shaded is not None and all_dates:
         unique_dates_for_shading = pd.concat(all_dates).drop_duplicates().sort_values().tolist()
         for i, (shade_start, shade_end) in enumerate(date_range_shaded):
@@ -782,13 +835,14 @@ def plot_leaving_value_groups(
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
     plt.show()
 
-def plot_dopamine_response_groups(groups, colors=None, poke_number=2, title=None):
+def plot_dopamine_response_groups(groups, colors=None, poke_number=2, title=None, normalize=None):
     """
     Plot mean ± SEM dopamine response for groups of animals, optionally over a date or date range for each animal.
     groups: dict mapping group name to dict of {animal_name: (DataFrame, date/date_range/None) or DataFrame}
     colors: dict mapping group name to color
     poke_number: which poke number to average (default: 2)
     title: optional custom plot title
+    normalize: tuple (start, end) in seconds, e.g. (-1, -0.1). If provided, for each trial, use this window to compute the baseline (mean signal), subtract it from the trial (dff baseline correction). No z-scoring is performed.
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -840,9 +894,22 @@ def plot_dopamine_response_groups(groups, colors=None, poke_number=2, title=None
                 continue
             # Group by trial (trial_number) and frames, then average across trials
             trial_group = plot_df.groupby(['trial_number', 'frames'])['dopamine'].mean().unstack('frames')
-            all_traces.append(trial_group.values)
+            trial_traces = trial_group.values  # shape: (n_trials, n_frames)
             if frames_axis is None:
                 frames_axis = trial_group.columns.values
+            # --- Baseline correction per trial ---
+            if normalize is not None:
+                norm_start, norm_end = normalize
+                norm_mask = (frames_axis >= norm_start) & (frames_axis <= norm_end)
+                if not np.any(norm_mask):
+                    raise ValueError(f"No frames found in normalization window {normalize}.")
+                normed_traces = []
+                for trial in trial_traces:
+                    baseline = np.nanmean(trial[norm_mask])
+                    trial_dff = trial - baseline
+                    normed_traces.append(trial_dff)
+                trial_traces = np.array(normed_traces)
+            all_traces.append(trial_traces)
         # Stack all animal traces for this group
         if len(all_traces) == 0:
             continue
@@ -858,7 +925,7 @@ def plot_dopamine_response_groups(groups, colors=None, poke_number=2, title=None
     else:
         plt.title(title)
     plt.xlabel('Time from Reward (s)')
-    plt.ylabel('Dopamine')
+    plt.ylabel('Dopamine dF/F' if normalize is not None else 'Dopamine')
     plt.legend()
     plt.tight_layout()
     plt.show()
@@ -933,5 +1000,112 @@ def plot_dopamine_peak(df_tot, animal_id, poke_number=2, date=None, x_labels=Non
         plt.title(f'Peak Dopamine by Session - {animal_id}')
     else:
         plt.title(title)
+    plt.tight_layout()
+    plt.show()
+
+def plot_dopamine_trials_groups(
+    groups,
+    colors=None,
+    poke_number=2,
+    title=None,
+    normalize=None,
+    omit_trials=None  # dict: {group_name: [trial_numbers_to_omit], ...}
+):
+    """
+    Plot all individual dopamine trials for groups of animals, with option to omit specific trials per group.
+    For each group, plots all included trials as light lines, and the average as a bold line.
+    Parameters:
+        groups: dict mapping group name to dict of {animal_name: (DataFrame, date/date_range/None) or DataFrame}
+        colors: dict mapping group name to color
+        poke_number: which poke number to average (default: 2)
+        title: optional custom plot title
+        normalize: tuple (start, end) in seconds, e.g. (-1, -0.1). If provided, for each trial, use this window to compute the baseline (mean signal), subtract it from the trial (dff baseline correction).
+        omit_trials: dict mapping group name to list of trial numbers to omit (per group)
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    plt.figure(figsize=(10,6))
+    frames_axis = None
+    for group_name, animal_dict in groups.items():
+        color = colors[group_name] if colors and group_name in colors else None
+        all_traces = []
+        all_trial_nums = []
+        group_omit = set(omit_trials[group_name]) if (omit_trials and group_name in omit_trials) else set()
+        for animal_name, animal_val in animal_dict.items():
+            # Accept (df, date) or just df
+            if isinstance(animal_val, tuple):
+                df, date = animal_val
+            else:
+                df = animal_val
+                date = None
+            plot_df = df.groupby('session').apply(filter_session).reset_index(drop=True)
+            if 'session' not in plot_df.columns:
+                plot_df = plot_df.reset_index()
+            # Date filtering
+            if date is not None:
+                if isinstance(date, (tuple, list)) and len(date) == 2:
+                    start_dt = pd.to_datetime(date[0]).normalize()
+                    end_dt = pd.to_datetime(date[1]).normalize()
+                    if 'date' in plot_df.columns:
+                        plot_df['date_norm'] = pd.to_datetime(plot_df['date']).dt.normalize()
+                        date_mask = (plot_df['date_norm'] >= start_dt) & (plot_df['date_norm'] <= end_dt)
+                        plot_df = plot_df[date_mask & (plot_df['poke_number'] == poke_number)]
+                    else:
+                        raise ValueError("No 'date' column found in input DataFrame.")
+                else:
+                    date_dt = pd.to_datetime(date).normalize()
+                    if 'date' in plot_df.columns:
+                        plot_df['date_norm'] = pd.to_datetime(plot_df['date']).dt.normalize()
+                        session_matches = plot_df[plot_df['date_norm'] == date_dt]['session'].unique()
+                        if len(session_matches) == 0:
+                            continue
+                        session = session_matches[0]
+                    else:
+                        raise ValueError("No 'date' column found in input DataFrame.")
+                    plot_df = plot_df.query(f"session=={session} and poke_number=={poke_number}")
+            else:
+                plot_df = plot_df.query(f"poke_number=={poke_number}")
+            if len(plot_df) == 0:
+                continue
+            # Group by trial (trial_number) and frames
+            trial_group = plot_df.groupby(['trial_number', 'frames'])['dopamine'].mean().unstack('frames')
+            trial_nums = trial_group.index.values
+            trial_traces = trial_group.values  # shape: (n_trials, n_frames)
+            if frames_axis is None:
+                frames_axis = trial_group.columns.values
+            # --- Baseline correction per trial ---
+            if normalize is not None:
+                norm_start, norm_end = normalize
+                norm_mask = (frames_axis >= norm_start) & (frames_axis <= norm_end)
+                if not np.any(norm_mask):
+                    raise ValueError(f"No frames found in normalization window {normalize}.")
+                normed_traces = []
+                for trial in trial_traces:
+                    baseline = np.nanmean(trial[norm_mask])
+                    trial_dff = trial - baseline
+                    normed_traces.append(trial_dff)
+                trial_traces = np.array(normed_traces)
+            # Omit specified trials
+            keep_mask = np.array([tn not in group_omit for tn in trial_nums])
+            trial_traces = trial_traces[keep_mask]
+            trial_nums = trial_nums[keep_mask]
+            # Plot all included trials as light lines
+            for trial in trial_traces:
+                plt.plot(frames_axis, trial, color=color, alpha=0.25, linewidth=1)
+            all_traces.append(trial_traces)
+            all_trial_nums.extend(trial_nums)
+        # Plot mean of included trials as bold line
+        if all_traces:
+            all_traces = np.vstack(all_traces)
+            mean_trace = np.nanmean(all_traces, axis=0)
+            plt.plot(frames_axis, mean_trace, color=color, label=group_name, linewidth=3)
+    if title is None:
+        plt.title('Dopamine Trials by Group')
+    else:
+        plt.title(title)
+    plt.xlabel('Time from Reward (s)')
+    plt.ylabel('Dopamine dF/F' if normalize is not None else 'Dopamine')
+    plt.legend()
     plt.tight_layout()
     plt.show() 

@@ -1,10 +1,10 @@
 raw_behav_dir = "/Volumes/ChemoBrain/ChemoBrain-Analysis/Data/Foraging_Cisplatin";
-subject_names = ["DA76-TNT-LH", "DA77-TRT-RH", "DA78-TNT-LRH", "DA79-TDT-NH", ...
-                "DA80-TDT-LH", "DA81-TDT-RH", "DA82-TDT-NH", "DA83-TDT-LRH", ...
-                "DA84-TNT-NH", "DA85-TNT-LH", "DA86-TNT-RH"];
+subject_names = ["DA123", "DA124", "DA125", "DA126", ...
+                "DA127", "DA128", "DA129", "DA130", ...
+                "DA131", "DA132", "DA133", "DA134"];
 sub_dir = "Randelay_photo_singlevalue/Session Data";
 
-outdir = "/Volumes/ChemoBrain/ChemoBrain-Analysis/Data/Foraging_Cisplatin/Cis3_processed";
+outdir = "/Volumes/ChemoBrain/ChemoBrain-Analysis/Data/Foraging_Cisplatin/Cis4_processed";
 
 % Add progress reporting
 fprintf('Starting processing for %d subjects\n', length(subject_names));
@@ -14,7 +14,7 @@ for i = 1:length(subject_names)
     fprintf('\nProcessing subject: %s\n', subj_name);
     
     % Construct the full path to the Session Data directory
-    full_dir = fullfile(raw_behav_dir, "Cis3", subj_name, sub_dir);
+    full_dir = fullfile(raw_behav_dir, "Cis4", subj_name, sub_dir);
     fprintf('Looking for data in: %s\n', full_dir);
     
     % Check if directory exists
