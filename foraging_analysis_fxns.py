@@ -1108,4 +1108,149 @@ def plot_dopamine_trials_groups(
     plt.ylabel('Dopamine dF/F' if normalize is not None else 'Dopamine')
     plt.legend()
     plt.tight_layout()
+    plt.show()
+
+def plot_trials_completed_groups(groups, colors=None, title='Trials Completed per Session by Group', plot_mode='average', x_date_range=None, x_labels=None, tick_interval=1, date_range_shaded=None, shaded_label=None, baseline=None):
+    """
+    Plot trials completed per session for groups of animals.
+    Each group is a dict of {animal_id: list of DataFrames (per session)}.
+    colors: dict mapping group_name to hex color code.
+    plot_mode: 'average' (default) plots group mean ± SEM, 'individual' plots all animals as individual traces.
+    x_date_range: tuple of (start_date, end_date) as strings (MM/DD/YY or similar, must match extract_datetime output)
+    x_labels: list of strings for x-axis labels (should match number of sessions after filtering)
+    tick_interval: integer, show every Nth tick label
+    date_range_shaded: list of (start_date, end_date) tuples to shade on the plot (date-based x-axis only)
+    shaded_label: label for the shaded region(s)
+    baseline: str or tuple, date or date range to use as baseline for normalization (trials completed will be shown as % baseline)
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import numpy as np
+    import matplotlib.ticker as mticker
+    plt.figure(figsize=(12, 7))
+    
+    all_dates = []  # Collect all dates across animals
+    
+    for group_name, animal_dict in groups.items():
+        color = colors[group_name] if colors and group_name in colors else None
+        all_animals = []
+        first_animal = True
+        for animal_id, behav_list in animal_dict.items():
+            df_all = pd.concat(behav_list, ignore_index=True)
+            # --- BASELINE NORMALIZATION ---
+            baseline_value = None
+            if baseline is not None:
+                if not np.issubdtype(df_all['date'].dtype, np.datetime64):
+                    df_all['date'] = pd.to_datetime(df_all['date'])
+                # Normalize all dates to midnight for comparison
+                df_all['date_norm'] = df_all['date'].dt.normalize()
+                if isinstance(baseline, str):
+                    baseline_dates = [pd.to_datetime(baseline).normalize()]
+                elif isinstance(baseline, (tuple, list)) and len(baseline) == 2:
+                    start = pd.to_datetime(baseline[0]).normalize()
+                    end = pd.to_datetime(baseline[1]).normalize()
+                    baseline_dates = pd.date_range(start, end, freq='D').normalize()
+                else:
+                    baseline_dates = []
+                baseline_mask = df_all['date_norm'].isin(baseline_dates)
+                baseline_df = df_all[baseline_mask]
+                baseline_value = baseline_df.groupby('date_norm').size().mean() if not baseline_df.empty else None
+                if baseline_value is None or baseline_value == 0:
+                    print(f"[WARNING] Animal {animal_id} missing or zero baseline value. All values set to NaN.")
+            # --- X-AXIS HANDLING ---
+            if x_date_range is not None:
+                if not np.issubdtype(df_all['date'].dtype, np.datetime64):
+                    df_all['date'] = pd.to_datetime(df_all['date'])
+                start = pd.to_datetime(x_date_range[0])
+                end = pd.to_datetime(x_date_range[1])
+                mask = (df_all['date'] >= start) & (df_all['date'] <= end)
+                df_all = df_all[mask]
+                trials_per_session = df_all.groupby(['date']).size().reset_index(name='trial_count')
+                # Normalize if baseline is set
+                if baseline is not None:
+                    if baseline_value is not None and baseline_value != 0:
+                        trials_per_session['trial_count'] = (trials_per_session['trial_count'] / baseline_value) * 100
+                    else:
+                        trials_per_session['trial_count'] = np.nan
+                all_dates.append(trials_per_session['date'])  # Add to all_dates as a Series
+                date_to_idx = {date: idx for idx, date in enumerate(trials_per_session['date'])}
+                trials_per_session['x_idx'] = trials_per_session['date'].map(date_to_idx)
+                all_animals.append(trials_per_session.set_index('x_idx')['trial_count'])
+                x_vals = trials_per_session['x_idx']
+                y_vals = trials_per_session['trial_count']
+            else:
+                trials_per_session = df_all.groupby('session').size().reset_index(name='trial_count')
+                # Normalize if baseline is set
+                if baseline is not None:
+                    if baseline_value is not None and baseline_value != 0:
+                        trials_per_session['trial_count'] = (trials_per_session['trial_count'] / baseline_value) * 100
+                    else:
+                        trials_per_session['trial_count'] = np.nan
+                all_animals.append(trials_per_session.set_index('session')['trial_count'])
+                x_vals = trials_per_session['session']
+                y_vals = trials_per_session['trial_count']
+            if plot_mode == 'individual':
+                if first_animal:
+                    plt.plot(x_vals, y_vals, color=color, alpha=1, linewidth=2, label=group_name)
+                    first_animal = False
+                else:
+                    plt.plot(x_vals, y_vals, color=color, alpha=1, linewidth=2, label=None)
+        if plot_mode == 'average' and all_animals:
+            group_df = pd.DataFrame(all_animals)
+            mean = group_df.mean(axis=0)
+            sem = group_df.sem(axis=0)
+            plt.plot(mean.index, mean.values, color=color, label=group_name, linewidth=3)
+            plt.fill_between(mean.index, mean - sem, mean + sem, color=color, alpha=0.2)
+    
+    ax = plt.gca()
+    # --- SHADED REGIONS FOR DATE-BASED X-AXIS ---
+    if x_date_range is not None and date_range_shaded is not None and all_dates:
+        # Normalize all dates to just the date (no time)
+        all_dates_normalized = [d.dt.normalize() if hasattr(d, 'dt') else pd.to_datetime(d).normalize() for d in all_dates]
+        unique_dates_for_shading = pd.concat(all_dates_normalized).drop_duplicates().sort_values().tolist()
+        for i, (shade_start, shade_end) in enumerate(date_range_shaded):
+            shade_start_dt = pd.to_datetime(shade_start).normalize()
+            shade_end_dt = pd.to_datetime(shade_end).normalize()
+            idx_start = None
+            idx_end = None
+            for idx, dt in enumerate(unique_dates_for_shading):
+                if idx_start is None and dt >= shade_start_dt:
+                    idx_start = idx
+                if dt <= shade_end_dt:
+                    idx_end = idx
+            if idx_start is not None and idx_end is not None:
+                ax.axvspan(idx_start, idx_end, color='gray', alpha=0.2, label=shaded_label if i == 0 and shaded_label else None)
+    
+    if x_date_range is not None:
+        plt.xlabel('Session')
+        if x_labels is not None:
+            n_ticks = len(x_labels)
+            ticks = list(range(0, n_ticks, tick_interval))
+            ax.set_xticks(ticks)
+            ax.set_xticklabels([x_labels[i] for i in ticks])
+    else:
+        plt.xlabel('Session')
+        ticks = ax.get_xticks()
+        if x_labels is not None and len(x_labels) == len(ticks):
+            ax.set_xticklabels(x_labels[::tick_interval])
+        else:
+            ax.set_xticks(ticks[::tick_interval])
+    
+    plt.ylabel('Trials Completed (% baseline)' if baseline is not None else 'Trials Completed')
+    plt.title(title)
+    plt.tight_layout()
+    x_data = None
+    if x_date_range is not None:
+        ax.set_xlim(left=-0.5)
+    else:
+        lines = ax.get_lines()
+        if lines:
+            x_data = lines[0].get_xdata()
+            if len(x_data) > 1:
+                min_x = np.min(x_data)
+                max_x = np.max(x_data)
+                pad = (max_x - min_x) * 0.05
+                ax.set_xlim(left=min_x - pad)
+    
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
     plt.show() 
