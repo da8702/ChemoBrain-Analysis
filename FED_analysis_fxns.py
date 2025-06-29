@@ -778,6 +778,7 @@ def group_poke_averaged(
     bin_size='1D',
     y_scale='linear',
     y_max=None,
+    y_min=None,
     dashed_line_date1=None,
     dashed_line_label1=None,
     dashed_line_date2=None,
@@ -816,6 +817,8 @@ def group_poke_averaged(
         Y-axis scale type ('linear', 'log') or maximum value (default: 'linear')
     y_max : float, optional
         Maximum value for y-axis (default: None)
+    y_min : float, optional
+        Minimum value for y-axis (default: None)
     dashed_line_date1, dashed_line_date2, dashed_line_date3, dashed_line_date4 : str or list, optional
         Date(s) for vertical dashed lines (default: None)
     dashed_line_label1, dashed_line_label2, dashed_line_label3, dashed_line_label4 : str, optional
@@ -963,13 +966,13 @@ def group_poke_averaged(
 
     # --- Set y-axis scaling ---
     if isinstance(y_scale, (int, float)):
-        plt.ylim(0, y_scale)
+        plt.ylim(y_min if y_min is not None else 0, y_scale)
     elif y_scale == 'log':
         plt.yscale('log')
     elif y_scale == 'linear':
         if y_max is None:
             y_max = plt.gca().get_ylim()[1]
-        plt.ylim(0, y_max)
+        plt.ylim(y_min if y_min is not None else 0, y_max)
 
     # --- Final labeling and legend ---
     # Always append (% baseline) if baseline was used
