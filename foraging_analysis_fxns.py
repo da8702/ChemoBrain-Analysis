@@ -1108,7 +1108,7 @@ def plot_dopamine_trials_groups(
     plt.ylabel('Dopamine dF/F' if normalize is not None else 'Dopamine')
     plt.legend()
     plt.tight_layout()
-    plt.show()
+    plt.show() 
 
 def plot_trials_completed_groups(groups, colors=None, title='Trials Completed per Session by Group', plot_mode='average', x_date_range=None, x_labels=None, tick_interval=1, date_range_shaded=None, shaded_label=None, baseline=None):
     """
