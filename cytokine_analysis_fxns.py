@@ -5,6 +5,7 @@ import numpy as np
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 
 # Hardcoded panel-to-biomarker mapping
 PANEL_MAP = {
@@ -1827,7 +1828,8 @@ def mgh_LDA(
     alpha=0.8,
     s=40,
     vertical_jitter=True,
-    group_labels=None
+    group_labels=None,
+    legend='inside'
 ):
     """
     Perform and plot LDA on MGH COVID data, coloring by any group/label column.
@@ -1866,6 +1868,8 @@ def mgh_LDA(
         If True and n_components==1, add vertical jitter for 1D LDA plot (default: True).
     group_labels : dict, optional
         Dictionary mapping group values to custom legend labels. If not provided, uses group values as labels.
+    legend : str, optional
+        'inside' (default) to show legend inside plot, 'outside' to place legend outside plot area (right side).
 
     Returns
     -------
@@ -1893,6 +1897,18 @@ def mgh_LDA(
             'ddimer_7_cat', 'ldh_7_cat', 'SampleID', 'subject_id', label_col
         ]
         feature_cols = [col for col in data.columns if col not in clinical_cols]
+    missing_features = [col for col in feature_cols if col not in data.columns]
+    if missing_features:
+        print(f"Warning: The following biomarkers are missing from the data and will be skipped: {missing_features}")
+        feature_cols = [col for col in feature_cols if col in data.columns]
+        if not feature_cols:
+            raise ValueError("None of the requested biomarkers/features are present in the data.")
+    missing_features = [col for col in feature_cols if col not in data.columns]
+    if missing_features:
+        print(f"Warning: The following biomarkers are missing from the data and will be skipped: {missing_features}")
+        feature_cols = [col for col in feature_cols if col in data.columns]
+        if not feature_cols:
+            raise ValueError("None of the requested biomarkers/features are present in the data.")
 
     # Drop rows with missing label or features
     df = data.dropna(subset=[label_col] + feature_cols)
@@ -1908,10 +1924,14 @@ def mgh_LDA(
     is_1d = X_lda.shape[1] == 1
     group_sep = 1.0  # default group separation
     if ax is None:
-        if is_1d and not vertical_jitter:
-            fig, ax = plt.subplots(figsize=(8, 2))
+        if legend == 'outside':
+            fig_width = 12
         else:
-            fig, ax = plt.subplots(figsize=(8, 6))
+            fig_width = 8
+        if is_1d and not vertical_jitter:
+            fig, ax = plt.subplots(figsize=(fig_width, 2))
+        else:
+            fig, ax = plt.subplots(figsize=(fig_width, 6))
     else:
         fig = None
     groups = np.unique(y)
@@ -1952,8 +1972,11 @@ def mgh_LDA(
     if title is None:
         title = f"LDA: {label_col}"
     ax.set_title(title)
-    ax.legend(loc=legend_loc)
     if fig is not None:
+        if legend == 'outside':
+            ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        else:
+            ax.legend(loc=legend_loc)
         plt.tight_layout()
         plt.show()
     return lda, X_lda
@@ -2138,13 +2161,16 @@ def mgh_LDA_biplot(
     title=None,
     color_map='tab10',
     standardize=True,
-    group_labels=None
+    group_labels=None,
+    legend='inside'
 ):
     """
     LDA biplot: combine LDA scores (samples) and loadings (variables as vectors) in one plot.
     If 'biomarkers' is provided, only those biomarkers (and/or panels) are used.
     group_labels : dict, optional
         Dictionary mapping group values to custom legend labels. If not provided, uses group values as labels.
+    legend : str, optional
+        'inside' (default) to show legend inside plot, 'outside' to place legend outside plot area (right side).
     """
     from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     from sklearn.preprocessing import StandardScaler
@@ -2198,7 +2224,8 @@ def mgh_LDA_biplot(
         features_top = features[idx]
         # Plot 1D biplot
         if ax is None:
-            fig, ax = plt.subplots(figsize=(8, 3))
+            fig_width = 12 if legend == 'outside' else 8
+            fig, ax = plt.subplots(figsize=(fig_width, 3))
         else:
             fig = None
         groups = np.unique(y)
@@ -2232,7 +2259,8 @@ def mgh_LDA_biplot(
         loadings_top = loadings[:, idx]
         features_top = features[idx]
         if ax is None:
-            fig, ax = plt.subplots(figsize=(8, 6))
+            fig_width = 12 if legend == 'outside' else 8
+            fig, ax = plt.subplots(figsize=(fig_width, 6))
         else:
             fig = None
         groups = np.unique(y)
@@ -2259,3 +2287,393 @@ def mgh_LDA_biplot(
         if fig is not None:
             plt.show()
         return lda, X_lda, loadings, features
+
+def mgh_PCA(
+    data,
+    label_col,
+    feature_cols=None,
+    biomarkers=None,
+    panel_map=None,
+    all_biomarkers=None,
+    n_components=2,
+    ax=None,
+    title=None,
+    cmap='tab10',
+    alpha=0.8,
+    s=40,
+    group_labels=None,
+    legend='inside'
+):
+    """
+    Perform and plot PCA on MGH COVID data, coloring by any group/label column.
+    Handles both 1D and 2D PCA cases.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Merged clinical + OLINK NPX data (from import_mgh_covid_data).
+    label_col : str
+        Column in data to use for coloring/groups (e.g., 'COVID', 'Acuity_max', etc.).
+    feature_cols : list of str, optional
+        Columns to use as features (default: all columns not in clinical or label_col).
+    biomarkers : list of str, optional
+        List of biomarker names and/or panel names to include in the analysis.
+        If provided, only these biomarkers will be used. Panel names will be expanded to all biomarkers in that panel.
+    panel_map : dict, optional
+        Mapping from panel names to lists of biomarkers (required if biomarkers is used).
+    all_biomarkers : list, optional
+        List of all available biomarker names (required if biomarkers is used).
+    n_components : int, optional
+        Number of PCA components to compute/plot (default: 2).
+    ax : matplotlib axis, optional
+        Axis to plot on (default: creates new figure).
+    title : str, optional
+        Plot title (default: auto-generated).
+    cmap : str, optional
+        Matplotlib colormap for groups (default: 'tab10').
+    alpha : float, optional
+        Point transparency (default: 0.8).
+    s : int, optional
+        Point size (default: 40).
+    group_labels : dict, optional
+        Dictionary mapping group values to custom legend labels. If not provided, uses group values as labels.
+    legend : str, optional
+        'inside' (default) to show legend inside plot, 'outside' to place legend outside plot area (right side).
+
+    Returns
+    -------
+    pca : PCA
+        Fitted PCA object.
+    X_pca : np.ndarray
+        PCA-transformed data.
+    """
+    # --- SMART FEATURE SELECTION ---
+    if biomarkers is not None:
+        if panel_map is None:
+            panel_map = PANEL_MAP
+        if all_biomarkers is None:
+            all_biomarkers = ALL_BIOMARKERS
+        feature_cols = expand_biomarkers(biomarkers, panel_map, all_biomarkers)
+    elif feature_cols is None:
+        clinical_cols = [
+            'COVID', 'Age_cat', 'BMI_cat', 'HEART', 'LUNG', 'KIDNEY', 'DIABETES', 'HTN', 'IMMUNO',
+            'Resp_Symp', 'Fever_Sympt', 'GI_Symp', 'D0_draw', 'D3_draw', 'D7_draw', 'DE_draw',
+            'Acuity_0', 'Acuity_3', 'Acuity_7', 'Acuity_28', 'Acuity_max',
+            'abs_neut_0_cat', 'abs_lymph_0_cat', 'abs_mono_0_cat', 'creat_0_cat', 'crp_0_cat',
+            'ddimer_0_cat', 'ldh_0_cat', 'Trop_72h', 'abs_neut_3_cat', 'abs_lymph_3_cat',
+            'abs_mono_3_cat', 'creat_3_cat', 'crp_3_cat', 'ddimer_3_cat', 'ldh_3_cat',
+            'abs_neut_7_cat', 'abs_lymph_7_cat', 'abs_mono_7_cat', 'creat_7_cat', 'crp_7_cat',
+            'ddimer_7_cat', 'ldh_7_cat', 'SampleID', 'subject_id', label_col
+        ]
+        feature_cols = [col for col in data.columns if col not in clinical_cols]
+
+    # --- Filter out missing biomarkers/features ---
+    missing_features = [col for col in feature_cols if col not in data.columns]
+    if missing_features:
+        print(f"Warning: The following biomarkers are missing from the data and will be skipped: {missing_features}")
+        feature_cols = [col for col in feature_cols if col in data.columns]
+        if not feature_cols:
+            raise ValueError("None of the requested biomarkers/features are present in the data.")
+
+    # Drop rows with missing label or features
+    df = data.dropna(subset=[label_col] + feature_cols)
+    X = df[feature_cols].values
+    y = df[label_col].values
+
+    # Standardize features
+    scaler = StandardScaler()
+    X_std = scaler.fit_transform(X)
+
+    # Fit PCA
+    n_components = min(X.shape[1], n_components)
+    pca = PCA(n_components=n_components)
+    X_pca = pca.fit_transform(X_std)
+    explained_var = pca.explained_variance_ratio_ * 100  # percent variance explained
+
+    # Plot
+    is_1d = X_pca.shape[1] == 1
+    if ax is None:
+        fig_width = 12 if legend == 'outside' else 8
+        if is_1d:
+            fig, ax = plt.subplots(figsize=(fig_width, 2))
+        else:
+            fig, ax = plt.subplots(figsize=(fig_width, 6))
+    else:
+        fig = None
+    groups = np.unique(y)
+    colors = plt.get_cmap(cmap)(np.linspace(0, 1, len(groups)))
+    if is_1d:
+        for i, group in enumerate(groups):
+            mask = y == group
+            label = group_labels.get(group, str(group)) if group_labels else str(group)
+            ax.scatter(X_pca[mask, 0], np.zeros(np.sum(mask)), label=label, color=colors[i], alpha=alpha, s=s, edgecolor='k', linewidth=0.5)
+        ax.set_xlabel(f"PC 1 ({explained_var[0]:.1f}%)")
+        ax.set_yticks([])
+        ax.set_ylabel("")
+    else:
+        for i, group in enumerate(groups):
+            mask = y == group
+            label = group_labels.get(group, str(group)) if group_labels else str(group)
+            ax.scatter(X_pca[mask, 0], X_pca[mask, 1], label=label, color=colors[i], alpha=alpha, s=s, edgecolor='k', linewidth=0.5)
+        ax.set_xlabel(f"PC 1 ({explained_var[0]:.1f}%)")
+        ax.set_ylabel(f"PC 2 ({explained_var[1]:.1f}%)" if len(explained_var) > 1 else "PC 2")
+    if title is None:
+        title = f"PCA: {label_col}"
+    ax.set_title(title)
+    if fig is not None:
+        if legend == 'outside':
+            ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        else:
+            ax.legend()
+        plt.tight_layout()
+        plt.show()
+    return pca, X_pca
+
+def mgh_PCA_varplot(
+    data,
+    label_col,
+    feature_cols=None,
+    biomarkers=None,
+    panel_map=None,
+    all_biomarkers=None,
+    max_components=None,
+    ax=None,
+    title=None,
+    show_cumulative=True
+):
+    """
+    Plot the explained variance ratio (scree plot) for PCA components.
+    If 'biomarkers' is provided, only those biomarkers (and/or panels) are used.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Merged clinical + OLINK NPX data (from import_mgh_covid_data).
+    label_col : str
+        Column in data to use for excluding from features (not used in PCA).
+    feature_cols : list of str, optional
+        Columns to use as features (default: all columns not in clinical or label_col).
+    biomarkers : list of str, optional
+        List of biomarker names and/or panel names to include in the analysis.
+        If provided, only these biomarkers will be used. Panel names will be expanded to all biomarkers in that panel.
+    panel_map : dict, optional
+        Mapping from panel names to lists of biomarkers (required if biomarkers is used).
+    all_biomarkers : list, optional
+        List of all available biomarker names (required if biomarkers is used).
+    max_components : int, optional
+        Maximum number of PCA components to plot (default: all).
+    ax : matplotlib axis, optional
+        Axis to plot on (default: creates new figure).
+    title : str, optional
+        Plot title (default: auto-generated).
+    show_cumulative : bool, optional
+        Whether to plot cumulative explained variance (default: True).
+
+    Returns
+    -------
+    pca : PCA
+        Fitted PCA object.
+    explained_var : np.ndarray
+        Explained variance ratio (percent) for each component.
+    """
+    from sklearn.decomposition import PCA
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from sklearn.preprocessing import StandardScaler
+
+    # SMART FEATURE SELECTION
+    if biomarkers is not None:
+        if panel_map is None:
+            panel_map = PANEL_MAP
+        if all_biomarkers is None:
+            all_biomarkers = ALL_BIOMARKERS
+        feature_cols = expand_biomarkers(biomarkers, panel_map, all_biomarkers)
+    if feature_cols is None:
+        clinical_cols = [
+            'COVID', 'Age_cat', 'BMI_cat', 'HEART', 'LUNG', 'KIDNEY', 'DIABETES', 'HTN', 'IMMUNO',
+            'Resp_Symp', 'Fever_Sympt', 'GI_Symp', 'D0_draw', 'D3_draw', 'D7_draw', 'DE_draw',
+            'Acuity_0', 'Acuity_3', 'Acuity_7', 'Acuity_28', 'Acuity_max',
+            'abs_neut_0_cat', 'abs_lymph_0_cat', 'abs_mono_0_cat', 'creat_0_cat', 'crp_0_cat',
+            'ddimer_0_cat', 'ldh_0_cat', 'Trop_72h', 'abs_neut_3_cat', 'abs_lymph_3_cat',
+            'abs_mono_3_cat', 'creat_3_cat', 'crp_3_cat', 'ddimer_3_cat', 'ldh_3_cat',
+            'abs_neut_7_cat', 'abs_lymph_7_cat', 'abs_mono_7_cat', 'creat_7_cat', 'crp_7_cat',
+            'ddimer_7_cat', 'ldh_7_cat', 'SampleID', 'subject_id', label_col
+        ]
+        feature_cols = [col for col in data.columns if col not in clinical_cols]
+    # Drop rows with missing label or features
+    df = data.dropna(subset=[label_col] + feature_cols)
+    X = df[feature_cols].values
+    # Standardize features
+    scaler = StandardScaler()
+    X_std = scaler.fit_transform(X)
+    n_components = X.shape[1]
+    if max_components is not None:
+        n_components = min(n_components, max_components)
+    pca = PCA(n_components=n_components)
+    pca.fit(X_std)
+    explained_var = pca.explained_variance_ratio_ * 100  # percent
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 4))
+    else:
+        fig = None
+
+    x = np.arange(1, len(explained_var) + 1)
+    ax.bar(x, explained_var, color='tab:blue', alpha=0.8, label='Individual')
+    if show_cumulative:
+        ax.plot(x, np.cumsum(explained_var), color='tab:orange', marker='o', label='Cumulative')
+    ax.set_xlabel('PCA Component')
+    ax.set_ylabel('Explained Variance (%)')
+    if title is None:
+        title = f"PCA Explained Variance"
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.legend()
+    if fig is not None:
+        plt.tight_layout()
+        plt.show()
+    return pca, explained_var
+
+def mgh_PCA_varplot_cum(
+    data,
+    label_col,
+    feature_cols=None,
+    biomarkers=None,
+    panel_map=None,
+    all_biomarkers=None,
+    max_components=None,
+    ax=None,
+    title=None
+):
+    """
+    Plot only the cumulative explained variance for PCA components.
+    If 'biomarkers' is provided, only those biomarkers (and/or panels) are used.
+    Parameters and returns are the same as mgh_PCA_varplot.
+    """
+    from sklearn.decomposition import PCA
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from sklearn.preprocessing import StandardScaler
+
+    # SMART FEATURE SELECTION
+    if biomarkers is not None:
+        if panel_map is None:
+            panel_map = PANEL_MAP
+        if all_biomarkers is None:
+            all_biomarkers = ALL_BIOMARKERS
+        feature_cols = expand_biomarkers(biomarkers, panel_map, all_biomarkers)
+    if feature_cols is None:
+        clinical_cols = [
+            'COVID', 'Age_cat', 'BMI_cat', 'HEART', 'LUNG', 'KIDNEY', 'DIABETES', 'HTN', 'IMMUNO',
+            'Resp_Symp', 'Fever_Sympt', 'GI_Symp', 'D0_draw', 'D3_draw', 'D7_draw', 'DE_draw',
+            'Acuity_0', 'Acuity_3', 'Acuity_7', 'Acuity_28', 'Acuity_max',
+            'abs_neut_0_cat', 'abs_lymph_0_cat', 'abs_mono_0_cat', 'creat_0_cat', 'crp_0_cat',
+            'ddimer_0_cat', 'ldh_0_cat', 'Trop_72h', 'abs_neut_3_cat', 'abs_lymph_3_cat',
+            'abs_mono_3_cat', 'creat_3_cat', 'crp_3_cat', 'ddimer_3_cat', 'ldh_3_cat',
+            'abs_neut_7_cat', 'abs_lymph_7_cat', 'abs_mono_7_cat', 'creat_7_cat', 'crp_7_cat',
+            'ddimer_7_cat', 'ldh_7_cat', 'SampleID', 'subject_id', label_col
+        ]
+        feature_cols = [col for col in data.columns if col not in clinical_cols]
+    # Drop rows with missing label or features
+    df = data.dropna(subset=[label_col] + feature_cols)
+    X = df[feature_cols].values
+    # Standardize features
+    scaler = StandardScaler()
+    X_std = scaler.fit_transform(X)
+    n_components = X.shape[1]
+    if max_components is not None:
+        n_components = min(n_components, max_components)
+    pca = PCA(n_components=n_components)
+    pca.fit(X_std)
+    explained_var = pca.explained_variance_ratio_ * 100  # percent
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 4))
+    else:
+        fig = None
+
+    x = np.arange(1, len(explained_var) + 1)
+    ax.plot(x, np.cumsum(explained_var), color='tab:orange', marker='o', label='Cumulative')
+    ax.set_xlabel('PCA Component')
+    ax.set_ylabel('Cumulative Explained Variance (%)')
+    if title is None:
+        title = f"PCA Cumulative Explained Variance"
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.legend()
+    if fig is not None:
+        plt.tight_layout()
+        plt.show()
+    return pca, explained_var
+
+def mgh_PCA_varplot_ind(
+    data,
+    label_col,
+    feature_cols=None,
+    biomarkers=None,
+    panel_map=None,
+    all_biomarkers=None,
+    max_components=None,
+    ax=None,
+    title=None
+):
+    """
+    Plot only the individual explained variance bars for PCA components.
+    If 'biomarkers' is provided, only those biomarkers (and/or panels) are used.
+    Parameters and returns are the same as mgh_PCA_varplot.
+    """
+    from sklearn.decomposition import PCA
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from sklearn.preprocessing import StandardScaler
+
+    # SMART FEATURE SELECTION
+    if biomarkers is not None:
+        if panel_map is None:
+            panel_map = PANEL_MAP
+        if all_biomarkers is None:
+            all_biomarkers = ALL_BIOMARKERS
+        feature_cols = expand_biomarkers(biomarkers, panel_map, all_biomarkers)
+    if feature_cols is None:
+        clinical_cols = [
+            'COVID', 'Age_cat', 'BMI_cat', 'HEART', 'LUNG', 'KIDNEY', 'DIABETES', 'HTN', 'IMMUNO',
+            'Resp_Symp', 'Fever_Sympt', 'GI_Symp', 'D0_draw', 'D3_draw', 'D7_draw', 'DE_draw',
+            'Acuity_0', 'Acuity_3', 'Acuity_7', 'Acuity_28', 'Acuity_max',
+            'abs_neut_0_cat', 'abs_lymph_0_cat', 'abs_mono_0_cat', 'creat_0_cat', 'crp_0_cat',
+            'ddimer_0_cat', 'ldh_0_cat', 'Trop_72h', 'abs_neut_3_cat', 'abs_lymph_3_cat',
+            'abs_mono_3_cat', 'creat_3_cat', 'crp_3_cat', 'ddimer_3_cat', 'ldh_3_cat',
+            'abs_neut_7_cat', 'abs_lymph_7_cat', 'abs_mono_7_cat', 'creat_7_cat', 'crp_7_cat',
+            'ddimer_7_cat', 'ldh_7_cat', 'SampleID', 'subject_id', label_col
+        ]
+        feature_cols = [col for col in data.columns if col not in clinical_cols]
+    # Drop rows with missing label or features
+    df = data.dropna(subset=[label_col] + feature_cols)
+    X = df[feature_cols].values
+    # Standardize features
+    scaler = StandardScaler()
+    X_std = scaler.fit_transform(X)
+    n_components = X.shape[1]
+    if max_components is not None:
+        n_components = min(n_components, max_components)
+    pca = PCA(n_components=n_components)
+    pca.fit(X_std)
+    explained_var = pca.explained_variance_ratio_ * 100  # percent
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 4))
+    else:
+        fig = None
+
+    x = np.arange(1, len(explained_var) + 1)
+    ax.bar(x, explained_var, color='tab:blue', alpha=0.8, label='Individual')
+    ax.set_xlabel('PCA Component')
+    ax.set_ylabel('Explained Variance (%)')
+    if title is None:
+        title = f"PCA Individual Explained Variance"
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.legend()
+    if fig is not None:
+        plt.tight_layout()
+        plt.show()
+    return pca, explained_var
