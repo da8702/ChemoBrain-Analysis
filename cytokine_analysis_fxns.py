@@ -1675,6 +1675,15 @@ PANEL_MAP = {
 # All unique biomarkers (no duplicates)
 ALL_BIOMARKERS = sorted(set(sum(PANEL_MAP.values(), [])))
 
+# Helper function for safe string conversion
+def safe_str(x):
+    if isinstance(x, (list, tuple, np.ndarray)):
+        return '|'.join(map(str, x))
+    elif pd.isnull(x):
+        return 'NA'
+    else:
+        return str(x)
+
 def import_mgh_covid_data(
     data_dir="../Data/MGH_Olink_COVID_Apr_27_2021/",
     na_values=None,
@@ -1758,31 +1767,35 @@ def import_mgh_covid_data(
         raise ValueError(f"'{id_col}' column not found in OLINK NPX file.")
     npx_id_col = id_candidates[0]
     npx_df[npx_id_col] = npx_df[npx_id_col].astype(str).str.strip()
-    # Pivot to wide format: subject_id as index, each Assay as a column, values=NPX
+    # Ensure Timepoint column exists and is clean
+    if 'Timepoint' in npx_df.columns:
+        npx_df['Timepoint'] = npx_df['Timepoint'].astype(str).str.strip()
+    else:
+        raise ValueError("'Timepoint' column not found in OLINK NPX file.")
+    # Pivot to wide format: (subject_id, Timepoint) as index, each Assay as a column, values=NPX
     if 'Assay' not in npx_df.columns or 'NPX' not in npx_df.columns:
         raise ValueError("NPX file must contain 'Assay' and 'NPX' columns for pivoting.")
     npx_wide = npx_df.pivot_table(
-        index=npx_id_col,
+        index=[npx_id_col, 'Timepoint'],
         columns='Assay',
         values='NPX',
         aggfunc='first'  # or np.mean if there are duplicates
     )
     npx_wide.reset_index(inplace=True)
     npx_wide['subject_id'] = npx_wide[npx_id_col].astype(str).str.strip()
-    # Convert numeric columns (except subject_id)
+    # Convert numeric columns (except subject_id, Timepoint)
     for col in npx_wide.columns:
-        if col in [npx_id_col, 'subject_id']:
+        if col in [npx_id_col, 'subject_id', 'Timepoint']:
             continue
         try:
             npx_wide[col] = pd.to_numeric(npx_wide[col])
         except Exception:
             pass
-
     # --- Merge clinical and NPX data using on='subject_id' ---
-    merged_df = pd.merge(clinical_df, npx_wide, on='subject_id', how='inner')
-    # Set index to subject_id
-    merged_df.set_index('subject_id', inplace=True)
-    # Do NOT drop the subject_id column (it's now the index)
+    merged_df = pd.merge(npx_wide, clinical_df, on='subject_id', how='left')
+    # Set index to subject_id and Timepoint
+    merged_df.set_index(['subject_id', 'Timepoint'], inplace=True)
+    # Do NOT drop the subject_id or Timepoint columns (they're now the index)
 
     # --- Import variable descriptions ---
     var_desc_df = None
@@ -1835,49 +1848,13 @@ def mgh_LDA(
     Perform and plot LDA on MGH COVID data, coloring by any group/label column.
     Handles both binary and multiclass LDA.
 
-    Parameters
-    ----------
-    data : pd.DataFrame
-        Merged clinical + OLINK NPX data (from import_mgh_covid_data).
-    label_col : str
-        Column in data to use for coloring/groups (e.g., 'COVID', 'Acuity_max', etc.).
-    feature_cols : list of str, optional
-        Columns to use as features (default: all columns not in clinical or label_col).
-    biomarkers : list of str, optional
-        List of biomarker names and/or panel names to include in the analysis.
-        If provided, only these biomarkers will be used. Panel names will be expanded to all biomarkers in that panel.
-    panel_map : dict, optional
-        Mapping from panel names to lists of biomarkers (required if biomarkers is used).
-    all_biomarkers : list, optional
-        List of all available biomarker names (required if biomarkers is used).
-    n_components : int, optional
-        Number of LDA components to compute/plot (default: 2).
-    ax : matplotlib axis, optional
-        Axis to plot on (default: creates new figure).
-    legend_loc : str, optional
-        Location of legend (default: 'best').
-    title : str, optional
-        Plot title (default: auto-generated).
-    cmap : str, optional
-        Matplotlib colormap for groups (default: 'tab10').
-    alpha : float, optional
-        Point transparency (default: 0.8).
-    s : int, optional
-        Point size (default: 40).
-    vertical_jitter : bool, optional
-        If True and n_components==1, add vertical jitter for 1D LDA plot (default: True).
-    group_labels : dict, optional
-        Dictionary mapping group values to custom legend labels. If not provided, uses group values as labels.
-    legend : str, optional
-        'inside' (default) to show legend inside plot, 'outside' to place legend outside plot area (right side).
-
-    Returns
-    -------
-    lda : LinearDiscriminantAnalysis
-        Fitted LDA object.
-    X_lda : np.ndarray
-        LDA-transformed data.
+    NOTE: If 'biomarkers' is provided, only those columns are used as features, regardless of feature_cols or other settings.
+    If 'biomarkers' is None, all numeric columns not in ['subject_id', 'Timepoint', 'COVID', 'SampleID'] are used as features by default.
     """
+    # --- DEFAULT BIOMARKER SELECTION ---
+    if biomarkers is None:
+        exclude_cols = ['subject_id', 'Timepoint', 'COVID', 'SampleID']
+        biomarkers = [col for col in data.columns if col not in exclude_cols and pd.api.types.is_numeric_dtype(data[col]) and col in ALL_BIOMARKERS]
     # --- SMART FEATURE SELECTION ---
     if biomarkers is not None:
         if panel_map is None:
@@ -1894,26 +1871,31 @@ def mgh_LDA(
             'ddimer_0_cat', 'ldh_0_cat', 'Trop_72h', 'abs_neut_3_cat', 'abs_lymph_3_cat',
             'abs_mono_3_cat', 'creat_3_cat', 'crp_3_cat', 'ddimer_3_cat', 'ldh_3_cat',
             'abs_neut_7_cat', 'abs_lymph_7_cat', 'abs_mono_7_cat', 'creat_7_cat', 'crp_7_cat',
-            'ddimer_7_cat', 'ldh_7_cat', 'SampleID', 'subject_id', label_col
+            'ddimer_7_cat', 'ldh_7_cat', 'SampleID', 'subject_id', 'Timepoint'
         ]
+        if isinstance(label_col, (tuple, list)):
+            clinical_cols += list(label_col)
+        else:
+            clinical_cols.append(label_col)
         feature_cols = [col for col in data.columns if col not in clinical_cols]
-    missing_features = [col for col in feature_cols if col not in data.columns]
-    if missing_features:
-        print(f"Warning: The following biomarkers are missing from the data and will be skipped: {missing_features}")
-        feature_cols = [col for col in feature_cols if col in data.columns]
-        if not feature_cols:
-            raise ValueError("None of the requested biomarkers/features are present in the data.")
-    missing_features = [col for col in feature_cols if col not in data.columns]
-    if missing_features:
-        print(f"Warning: The following biomarkers are missing from the data and will be skipped: {missing_features}")
-        feature_cols = [col for col in feature_cols if col in data.columns]
-        if not feature_cols:
-            raise ValueError("None of the requested biomarkers/features are present in the data.")
-
-    # Drop rows with missing label or features
-    df = data.dropna(subset=[label_col] + feature_cols)
+    # Handle dropna for multiple label columns
+    if isinstance(label_col, (tuple, list)):
+        # Check all columns exist
+        missing = [col for col in label_col if col not in data.columns]
+        if missing:
+            raise ValueError(f"Missing label columns: {missing}")
+        dropna_cols = list(label_col) + feature_cols
+    else:
+        dropna_cols = [label_col] + feature_cols
+    df = data.dropna(subset=dropna_cols)
+    # Combine label columns if needed
+    if isinstance(label_col, (tuple, list)):
+        y = df[list(label_col)].applymap(safe_str).agg('|'.join, axis=1).values
+        label_col_str = '|'.join(label_col)
+    else:
+        y = df[label_col].apply(safe_str).values
+        label_col_str = label_col
     X = df[feature_cols].values
-    y = df[label_col].values
 
     # Fit LDA
     lda = LinearDiscriminantAnalysis(n_components=n_components)
@@ -1970,7 +1952,7 @@ def mgh_LDA(
         ax.set_xlabel(xlab)
         ax.set_ylabel(ylab)
     if title is None:
-        title = f"LDA: {label_col}"
+        title = f"LDA: {label_col_str}"
     ax.set_title(title)
     if fig is not None:
         if legend == 'outside':
@@ -2022,6 +2004,9 @@ def mgh_LDA_varplot(
         feature_cols = [col for col in data.columns if col not in clinical_cols]
     # Drop rows with missing label or features
     df = data.dropna(subset=[label_col] + feature_cols)
+    print("[DEBUG] feature_cols:", feature_cols)
+    print("[DEBUG] feature dtypes:\n", df[feature_cols].dtypes)
+    print("[DEBUG] first 5 rows of features:\n", df[feature_cols].head())
     X = df[feature_cols].values
     y = df[label_col].values
     n_classes = len(np.unique(y))
@@ -2071,12 +2056,13 @@ def mgh_LDA_loadings(
 ):
     """
     Plot LDA loadings (coefficients) for each feature for a given component.
-    If 'biomarkers' is provided, only those biomarkers (and/or panels) are used.
+    If 'biomarkers' is provided, only those columns are used as features, regardless of feature_cols or other settings.
+    If 'biomarkers' is None, all numeric columns not in ['subject_id', 'Timepoint', 'COVID', 'SampleID'] are used as features by default.
     """
-    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-    import matplotlib.pyplot as plt
-    import numpy as np
-
+    # --- DEFAULT BIOMARKER SELECTION ---
+    if biomarkers is None:
+        exclude_cols = ['subject_id', 'Timepoint', 'COVID', 'SampleID']
+        biomarkers = [col for col in data.columns if col not in exclude_cols and pd.api.types.is_numeric_dtype(data[col]) and col in ALL_BIOMARKERS]
     # SMART FEATURE SELECTION
     if biomarkers is not None:
         if panel_map is None:
@@ -2084,7 +2070,7 @@ def mgh_LDA_loadings(
         if all_biomarkers is None:
             all_biomarkers = ALL_BIOMARKERS
         feature_cols = expand_biomarkers(biomarkers, panel_map, all_biomarkers)
-    if feature_cols is None:
+    elif feature_cols is None:
         clinical_cols = [
             'COVID', 'Age_cat', 'BMI_cat', 'HEART', 'LUNG', 'KIDNEY', 'DIABETES', 'HTN', 'IMMUNO',
             'Resp_Symp', 'Fever_Sympt', 'GI_Symp', 'D0_draw', 'D3_draw', 'D7_draw', 'DE_draw',
@@ -2166,17 +2152,13 @@ def mgh_LDA_biplot(
 ):
     """
     LDA biplot: combine LDA scores (samples) and loadings (variables as vectors) in one plot.
-    If 'biomarkers' is provided, only those biomarkers (and/or panels) are used.
-    group_labels : dict, optional
-        Dictionary mapping group values to custom legend labels. If not provided, uses group values as labels.
-    legend : str, optional
-        'inside' (default) to show legend inside plot, 'outside' to place legend outside plot area (right side).
+    If 'biomarkers' is provided, only those columns are used as features, regardless of feature_cols or other settings.
+    If 'biomarkers' is None, all numeric columns not in ['subject_id', 'Timepoint', 'COVID', 'SampleID'] are used as features by default.
     """
-    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-    from sklearn.preprocessing import StandardScaler
-    import matplotlib.pyplot as plt
-    import numpy as np
-
+    # --- DEFAULT BIOMARKER SELECTION ---
+    if biomarkers is None:
+        exclude_cols = ['subject_id', 'Timepoint', 'COVID', 'SampleID']
+        biomarkers = [col for col in data.columns if col not in exclude_cols and pd.api.types.is_numeric_dtype(data[col]) and col in ALL_BIOMARKERS]
     # SMART FEATURE SELECTION
     if biomarkers is not None:
         if panel_map is None:
@@ -2184,7 +2166,7 @@ def mgh_LDA_biplot(
         if all_biomarkers is None:
             all_biomarkers = ALL_BIOMARKERS
         feature_cols = expand_biomarkers(biomarkers, panel_map, all_biomarkers)
-    if feature_cols is None:
+    elif feature_cols is None:
         clinical_cols = [
             'COVID', 'Age_cat', 'BMI_cat', 'HEART', 'LUNG', 'KIDNEY', 'DIABETES', 'HTN', 'IMMUNO',
             'Resp_Symp', 'Fever_Sympt', 'GI_Symp', 'D0_draw', 'D3_draw', 'D7_draw', 'DE_draw',
@@ -2308,45 +2290,13 @@ def mgh_PCA(
     Perform and plot PCA on MGH COVID data, coloring by any group/label column.
     Handles both 1D and 2D PCA cases.
 
-    Parameters
-    ----------
-    data : pd.DataFrame
-        Merged clinical + OLINK NPX data (from import_mgh_covid_data).
-    label_col : str
-        Column in data to use for coloring/groups (e.g., 'COVID', 'Acuity_max', etc.).
-    feature_cols : list of str, optional
-        Columns to use as features (default: all columns not in clinical or label_col).
-    biomarkers : list of str, optional
-        List of biomarker names and/or panel names to include in the analysis.
-        If provided, only these biomarkers will be used. Panel names will be expanded to all biomarkers in that panel.
-    panel_map : dict, optional
-        Mapping from panel names to lists of biomarkers (required if biomarkers is used).
-    all_biomarkers : list, optional
-        List of all available biomarker names (required if biomarkers is used).
-    n_components : int, optional
-        Number of PCA components to compute/plot (default: 2).
-    ax : matplotlib axis, optional
-        Axis to plot on (default: creates new figure).
-    title : str, optional
-        Plot title (default: auto-generated).
-    cmap : str, optional
-        Matplotlib colormap for groups (default: 'tab10').
-    alpha : float, optional
-        Point transparency (default: 0.8).
-    s : int, optional
-        Point size (default: 40).
-    group_labels : dict, optional
-        Dictionary mapping group values to custom legend labels. If not provided, uses group values as labels.
-    legend : str, optional
-        'inside' (default) to show legend inside plot, 'outside' to place legend outside plot area (right side).
-
-    Returns
-    -------
-    pca : PCA
-        Fitted PCA object.
-    X_pca : np.ndarray
-        PCA-transformed data.
+    NOTE: If 'biomarkers' is provided, only those columns are used as features, regardless of feature_cols or other settings.
+    If 'biomarkers' is None, all numeric columns not in ['subject_id', 'Timepoint', 'COVID', 'SampleID'] are used as features by default.
     """
+    # --- DEFAULT BIOMARKER SELECTION ---
+    if biomarkers is None:
+        exclude_cols = ['subject_id', 'Timepoint', 'COVID', 'SampleID']
+        biomarkers = [col for col in data.columns if col not in exclude_cols and pd.api.types.is_numeric_dtype(data[col]) and col in ALL_BIOMARKERS]
     # --- SMART FEATURE SELECTION ---
     if biomarkers is not None:
         if panel_map is None:
@@ -2363,22 +2313,27 @@ def mgh_PCA(
             'ddimer_0_cat', 'ldh_0_cat', 'Trop_72h', 'abs_neut_3_cat', 'abs_lymph_3_cat',
             'abs_mono_3_cat', 'creat_3_cat', 'crp_3_cat', 'ddimer_3_cat', 'ldh_3_cat',
             'abs_neut_7_cat', 'abs_lymph_7_cat', 'abs_mono_7_cat', 'creat_7_cat', 'crp_7_cat',
-            'ddimer_7_cat', 'ldh_7_cat', 'SampleID', 'subject_id', label_col
+            'ddimer_7_cat', 'ldh_7_cat', 'SampleID', 'subject_id', 'Timepoint'
         ]
+        if isinstance(label_col, (tuple, list)):
+            clinical_cols += list(label_col)
+        else:
+            clinical_cols.append(label_col)
         feature_cols = [col for col in data.columns if col not in clinical_cols]
-
-    # --- Filter out missing biomarkers/features ---
-    missing_features = [col for col in feature_cols if col not in data.columns]
-    if missing_features:
-        print(f"Warning: The following biomarkers are missing from the data and will be skipped: {missing_features}")
-        feature_cols = [col for col in feature_cols if col in data.columns]
-        if not feature_cols:
-            raise ValueError("None of the requested biomarkers/features are present in the data.")
-
-    # Drop rows with missing label or features
-    df = data.dropna(subset=[label_col] + feature_cols)
+    # Handle dropna for multiple label columns
+    if isinstance(label_col, (tuple, list)):
+        dropna_cols = list(label_col) + feature_cols
+    else:
+        dropna_cols = [label_col] + feature_cols
+    df = data.dropna(subset=dropna_cols)
+    # Combine label columns if needed
+    if isinstance(label_col, (tuple, list)):
+        y = df[list(label_col)].applymap(safe_str).agg('|'.join, axis=1).values
+        label_col_str = '|'.join(label_col)
+    else:
+        y = df[label_col].apply(safe_str).values
+        label_col_str = label_col
     X = df[feature_cols].values
-    y = df[label_col].values
 
     # Standardize features
     scaler = StandardScaler()
@@ -2418,7 +2373,7 @@ def mgh_PCA(
         ax.set_xlabel(f"PC 1 ({explained_var[0]:.1f}%)")
         ax.set_ylabel(f"PC 2 ({explained_var[1]:.1f}%)" if len(explained_var) > 1 else "PC 2")
     if title is None:
-        title = f"PCA: {label_col}"
+        title = f"PCA: {label_col_str}"
     ax.set_title(title)
     if fig is not None:
         if legend == 'outside':
