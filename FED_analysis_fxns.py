@@ -1253,49 +1253,7 @@ def group_breakpoint_plot(
 ):
     """
     Plot per-day breakpoint statistic (max or percentile) for each animal, baseline-normalize, then average across groups.
-
-    Parameters:
-    -----------
-    groups : dict
-        Dictionary mapping group labels to lists of DataFrames
-    percentile : int or None, optional
-        If int, compute this percentile of breakpoints per bin. If None, use the max breakpoint per bin. (default: None)
-    time_col : str, optional
-        Name of the time column (default: 'MM:DD:YYYY hh:mm:ss')
-    fr_col : str, optional
-        Name of the FR column (default: 'FR')
-    bin_size : str, optional
-        Time interval for binning data (default: '1D')
-    baseline : str or list, optional
-        Baseline date(s) for normalization (default: None)
-    show_sem : str, optional
-        How to display standard error of the mean ('shaded', 'error_bars', or None) (default: 'shaded')
-    group_colors : dict, optional
-        Dictionary mapping group labels to colors (default: None)
-    x_date_range : list, optional
-        List of [start_date, end_date] for x-axis limits (default: None)
-    x_labels : list, optional
-        List of labels for x-axis ticks (default: None)
-    tick_interval : int, optional
-        Interval for x-axis tick labels (default: 1)
-    dashed_line_date1, dashed_line_date2 : str or list, optional
-        Date(s) for vertical dashed lines (default: None)
-    dashed_line_label1, dashed_line_label2 : str, optional
-        Label(s) for vertical dashed lines (default: None)
-    date_range_shaded : list, optional
-        List of [start_date, end_date] pairs for shaded regions (default: None)
-    shaded_label : str, optional
-        Label for shaded regions (default: None)
-    y_scale : str or float, optional
-        Y-axis scale type ('linear', 'log') or maximum value (default: 'linear')
-    y_max : float, optional
-        Maximum value for y-axis (default: None)
-    plot_title : str, optional
-        Title for the plot (default: None)
-    plot_xlabel : str, optional
-        Label for x-axis (default: 'Day')
-    plot_ylabel : str, optional
-        Label for y-axis (default: None)
+    ...
     """
     import numpy as np
     import pandas as pd
@@ -1332,11 +1290,17 @@ def group_breakpoint_plot(
                     vals.append(max_fr)
                     times.append(t)
                     max_fr = 0
-            if not vals:
-                continue
-
             bp_df = pd.DataFrame({'breakpoint': vals}, index=pd.to_datetime(times))
-
+            # --- Robust fallback: For every day in the data, if no breakpoint exists, use last FR of the day ---
+            all_days = [d.date() for d in pd.to_datetime(df_copy.index.date).unique()]
+            bp_days = [d.date() for d in pd.to_datetime(bp_df.index.date).unique()] if not bp_df.empty else []
+            missing_days = set(all_days) - set(bp_days)
+            for day in missing_days:
+                day_mask = [idx.date() == day for idx in df_copy.index]
+                if any(day_mask):
+                    last_time = df_copy.index[day_mask][-1]
+                    last_fr = fr_vals.loc[last_time]
+                    bp_df.loc[last_time] = last_fr
             # Compute daily statistic: max or percentile
             if percentile is None:
                 daily_stat = bp_df['breakpoint'].resample(bin_size).max()
@@ -1344,7 +1308,6 @@ def group_breakpoint_plot(
                 def calc_pct(x):
                     return np.nan if len(x) == 0 else np.percentile(x, percentile)
                 daily_stat = bp_df['breakpoint'].resample(bin_size).apply(calc_pct)
-
             # Baseline normalization per animal
             if baseline:
                 baseline_used = True
@@ -1363,17 +1326,13 @@ def group_breakpoint_plot(
                     base_mean = base_vals.mean()
                     if base_mean > 0:
                         daily_stat = (daily_stat / base_mean) * 100
-
             individual_series.append(daily_stat)
-
         if not individual_series:
             continue
-
         combined = pd.concat(individual_series, axis=1)
         mean_series = combined.mean(axis=1)
         sem_series = combined.sem(axis=1)
         group_stats[group_label] = (mean_series, sem_series, color)
-
     # Plot group means + SEM
     for label, (mean_s, sem_s, color) in group_stats.items():
         plt.plot(mean_s.index, mean_s, '-o', color=color, label=label)
@@ -1381,7 +1340,6 @@ def group_breakpoint_plot(
             plt.fill_between(mean_s.index, mean_s - sem_s, mean_s + sem_s, color=color, alpha=0.2)
         elif show_sem == 'error_bars':
             plt.errorbar(mean_s.index, mean_s, yerr=sem_s, fmt='o', color=color, capsize=4)
-
     # Add dashed lines
     def add_lines(dates, lab, col):
         if dates:
@@ -1389,10 +1347,8 @@ def group_breakpoint_plot(
                 dt = pd.to_datetime(d, format='%m/%d/%y', errors='coerce')
                 if pd.notnull(dt):
                     plt.axvline(dt, color=col, linestyle='--', label=lab if i == 0 else None)
-
     add_lines(dashed_line_date1, dashed_line_label1, 'black')
     add_lines(dashed_line_date2, dashed_line_label2, 'blue')
-
     # Shaded date ranges
     if date_range_shaded:
         for i, (start, end) in enumerate(date_range_shaded):
@@ -1400,7 +1356,6 @@ def group_breakpoint_plot(
             en = pd.to_datetime(end, format='%m/%d/%y', errors='coerce')
             if pd.notnull(st) and pd.notnull(en):
                 plt.axvspan(st, en, color='lightgrey', alpha=0.5, label=shaded_label if i == 0 else None)
-
     # X-axis formatting
     if x_date_range:
         plt.xlim(
@@ -1414,7 +1369,6 @@ def group_breakpoint_plot(
         ticks = dates[::tick_interval]
         labs = x_labels[::tick_interval]
         plt.xticks(ticks, labs)
-
     # Y-axis scaling
     if isinstance(y_scale, (int, float)):
         plt.ylim(0, y_scale)
@@ -1424,7 +1378,6 @@ def group_breakpoint_plot(
         if y_max is None:
             y_max = plt.gca().get_ylim()[1]
         plt.ylim(0, y_max)
-
     # Labels and title
     if plot_title is None:
         if percentile is None:
